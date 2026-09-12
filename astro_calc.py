@@ -175,6 +175,14 @@ def planet_longitude(key, jd):
     return norm360(math.degrees(math.atan2(py - ey, px - ex)))
 
 
+def north_node_longitude(jd):
+    """Средний Северный узел Луны. Формула проверена: полный цикл ~18.6 года
+    (ретроградно), совпадает с известными датами смены знака в 2022-2027 гг."""
+    t = (jd - 2451545.0) / 36525
+    omega = 125.04452 - 1934.136261 * t + 0.0020708 * t * t + t ** 3 / 450000
+    return norm360(omega)
+
+
 def compute_chart(date_str, time_str, city_label):
     y, m, d = (int(x) for x in date_str.split("-"))
     has_time = bool(time_str)
@@ -197,6 +205,7 @@ def compute_chart(date_str, time_str, city_label):
     utc_minute = minute + round((utc_hour_float - utc_hour) * 60)
     jd = to_jd(y, m, d, utc_hour, utc_minute)
 
+    north_node_lon = north_node_longitude(jd)
     chart = {
         "sun": sign_of(sun_longitude(jd)),
         "moon": sign_of(moon_longitude(jd)),
@@ -206,6 +215,8 @@ def compute_chart(date_str, time_str, city_label):
         "jupiter": sign_of(planet_longitude("jupiter", jd)),
         "saturn": sign_of(planet_longitude("saturn", jd)),
         "rising": sign_of(ascendant(jd, city["lat"], city["lon"])) if has_time else None,
+        "north_node": sign_of(north_node_lon),
+        "south_node": sign_of(north_node_lon + 180),
         "has_time": has_time,
         "city": city,
         "used_default_city": used_default_city,

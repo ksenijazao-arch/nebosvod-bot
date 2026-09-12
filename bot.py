@@ -41,6 +41,8 @@ SKIP_CITY_CB = "skip_city"
 FORECAST_CB = "forecast"
 RESTART_CB = "restart"
 SPHERE_CB_PREFIX = "sphere:"
+UNLIVED_MENU_CB = "unlived_menu"
+UNLIVED_CB_PREFIX = "unlived:"
 
 
 def fmt_date(d: date) -> str:
@@ -140,6 +142,20 @@ async def skip_city(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
 # ---------- сборка и отправка разбора ----------
 
+def main_menu_keyboard():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton(s["title"], callback_data=f"{SPHERE_CB_PREFIX}{key}") for key, s in list(ct.SPHERES.items())[:2]],
+        [InlineKeyboardButton(s["title"], callback_data=f"{SPHERE_CB_PREFIX}{key}") for key, s in list(ct.SPHERES.items())[2:]],
+        [InlineKeyboardButton("Узнать важные даты", callback_data=FORECAST_CB)],
+        [InlineKeyboardButton("★ Непрожитые жизни", callback_data=UNLIVED_MENU_CB)],
+        [InlineKeyboardButton("Начать заново", callback_data=RESTART_CB)],
+    ])
+
+
+async def send_menu(context, chat_id):
+    await context.bot.send_message(chat_id=chat_id, text="Что дальше?", reply_markup=main_menu_keyboard())
+
+
 async def deliver_chart(update: Update, context: ContextTypes.DEFAULT_TYPE, chat_id: int) -> int:
     await send_bot(context, chat_id, "Секунду, считаю положение светил на момент вашего рождения…", 1.1)
 
@@ -197,13 +213,7 @@ async def deliver_chart(update: Update, context: ContextTypes.DEFAULT_TYPE, chat
         1.2,
     )
 
-    keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton(s["title"], callback_data=f"{SPHERE_CB_PREFIX}{key}") for key, s in list(ct.SPHERES.items())[:2]],
-        [InlineKeyboardButton(s["title"], callback_data=f"{SPHERE_CB_PREFIX}{key}") for key, s in list(ct.SPHERES.items())[2:]],
-        [InlineKeyboardButton("Узнать важные даты", callback_data=FORECAST_CB)],
-        [InlineKeyboardButton("Начать заново", callback_data=RESTART_CB)],
-    ])
-    await context.bot.send_message(chat_id=chat_id, text="Что дальше?", reply_markup=keyboard)
+    await send_menu(context, chat_id)
     return ConversationHandler.END
 
 
@@ -225,9 +235,7 @@ async def sphere(update: Update, context: ContextTypes.DEFAULT_TYPE):
     planet_sign = chart[s["planet_key"]]["sign"]
     if chart["has_time"] and chart["rising"]:
         house_sign = ac.sign_in_house(chart["rising"]["sign"], s["house_num"])
-        text = f"{s['house_texts'][house_sign]}\n\n{s['transition']} {s['planet_texts'][planet_sign]}"
-        await send_bot(context, chat_id, text, 1.2)
-
+        await send_bot(context, chat_id, s["house_texts"][house_sign], 1.3)
         await send_bot(context, chat_id, f"Что с этим делать: {s['advice'][house_sign]}", 0.9)
 
         forecast = context.user_data.get("forecast")
@@ -240,18 +248,69 @@ async def sphere(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await send_bot(context, chat_id, "Ближайшие даты роста именно в этой сфере, на два года вперёд:", 0.7)
             for h in relevant[:4]:
                 t = ct.TRANSIT_TEXTS[h["planet_key"]][h["point_key"]][h["aspect_key"]]
-                await send_bot(context, chat_id, f"{h['date_label']}: {t}.", 0.8)
+                await send_bot(
+                    context, chat_id,
+                    f"{h['date_label']}: {ct.PLANET_LABEL[h['planet_key']]} образует {ct.ASPECT_ACCUSATIVE[h['aspect_key']]} "
+                    f"с {ct.NATAL_INSTRUMENTAL[h['point_key']]}. {t}.",
+                    0.8,
+                )
         else:
             await send_bot(
                 context, chat_id,
-                "В ближайшие два года отдельных заметных дат именно для этой сферы не выпадает, "
-                "характер сферы от этого никуда не девается.",
-                0.8,
+                f"По сфере «{s['title']}» на ближайшие два года точной даты не находится: "
+                "Юпитер и Сатурн сейчас заняты другими домами вашей карты. Сама сфера никуда не пропадает, "
+                "её заметный момент просто оказался за пределами этого окна.",
+                0.9,
             )
     else:
-        text = (f"Без точного времени рождения не вижу, в каком доме у вас сейчас {s['title'].lower()}, "
-                f"но кое-что скажу и так. {s['planet_texts'][planet_sign]}")
-        await send_bot(context, chat_id, text, 1.2)
+        await send_bot(
+            context, chat_id,
+            f"Без точного времени рождения не вижу, в каком доме у вас сейчас {s['title'].lower()}, "
+            f"но кое-что скажу и так. {s['planet_texts'][planet_sign]}",
+            1.2,
+        )
+    await send_menu(context, chat_id)
+
+
+# ---------- сканер непрожитых жизней ----------
+
+async def unlived_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    chat_id = query.message.chat_id
+    if not context.user_data.get("chart"):
+        await context.bot.send_message(chat_id=chat_id, text="Сначала пройдите разбор заново: /start")
+        return
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton(label, callback_data=f"{UNLIVED_CB_PREFIX}{key}")]
+        for key, label in ct.SCENARIO_LABELS.items()
+    ])
+    await send_bot(
+        context, chat_id,
+        "Какой поворот вам хочется увидеть? Это работает по лунным узлам вашей карты: "
+        "точке пройденного пути и точке, куда вас тянет расти.",
+        0.9, reply_markup=keyboard,
+    )
+
+
+async def unlived(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    chat_id = query.message.chat_id
+    scenario = query.data[len(UNLIVED_CB_PREFIX):]
+    chart = context.user_data.get("chart")
+    if not chart:
+        await context.bot.send_message(chat_id=chat_id, text="Сначала пройдите разбор заново: /start")
+        return
+
+    await query.edit_message_reply_markup(reply_markup=None)
+    await send_bot(context, chat_id, "Смотрю на узлы вашей карты…", 1.0)
+
+    opening = ct.SCENARIO_OPENINGS[scenario]
+    vision = ct.NODE_VISIONS[chart["north_node"]["sign"]]
+    await send_bot(context, chat_id, f"{opening}\n\n{vision}", 1.6)
+    await send_bot(context, chat_id, ct.NODE_CLOSING, 1.1)
+    await send_menu(context, chat_id)
 
 
 # ---------- прогноз ----------
@@ -294,8 +353,8 @@ async def forecast(update: Update, context: ContextTypes.DEFAULT_TYPE):
                               f"и заметнее всего это отразится на {info['tie']}.")
             await send_bot(
                 context, chat_id,
-                f"{h['date_label']}: {ct.PLANET_LABEL[h['planet_key']]} в {h['aspect_name']} "
-                f"к вашей натальной {ct.NATAL_LABEL[h['point_key']]}. {text}.{house_note}",
+                f"{h['date_label']}: {ct.PLANET_LABEL[h['planet_key']]} образует {ct.ASPECT_ACCUSATIVE[h['aspect_key']]} "
+                f"с {ct.NATAL_INSTRUMENTAL[h['point_key']]}. {text}.{house_note}",
                 0.95,
             )
         if len(hits) > 6:
@@ -303,8 +362,7 @@ async def forecast(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             f"Это первые 6 дат из {len(hits)} найденных на два года вперёд, остальные дальше по времени.",
                             0.7)
 
-    keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("Начать заново", callback_data=RESTART_CB)]])
-    await context.bot.send_message(chat_id=chat_id, text="На этом пока всё.", reply_markup=keyboard)
+    await send_menu(context, chat_id)
 
 
 async def restart_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -373,6 +431,8 @@ def main():
     application.add_handler(conv)
     application.add_handler(CallbackQueryHandler(forecast, pattern=f"^{FORECAST_CB}$"))
     application.add_handler(CallbackQueryHandler(sphere, pattern=f"^{SPHERE_CB_PREFIX}"))
+    application.add_handler(CallbackQueryHandler(unlived_menu, pattern=f"^{UNLIVED_MENU_CB}$"))
+    application.add_handler(CallbackQueryHandler(unlived, pattern=f"^{UNLIVED_CB_PREFIX}"))
 
     log.info("Небосвод запущен, жду сообщений…")
     application.run_polling(allowed_updates=Update.ALL_TYPES)
