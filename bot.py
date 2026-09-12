@@ -90,7 +90,7 @@ async def got_date(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     await send_bot(
         context, chat_id,
         "Хорошо. А время рождения знаете? Чем точнее время, тем точнее выйдет асцендент.\n\n"
-        "Пришлите время в формате ЧЧ:ММ (например 14:15), или нажмите кнопку ниже, если не знаете.",
+        "Пришлите время в формате ЧЧ:ММ или ЧЧ.ММ (например 14:15 или 14.15), или нажмите кнопку ниже, если не знаете.",
         0.8, reply_markup=keyboard,
     )
     return ASK_TIME
@@ -98,9 +98,9 @@ async def got_date(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
 async def got_time(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     text = update.message.text.strip()
-    m = re.match(r"^(\d{1,2}):(\d{2})$", text)
+    m = re.match(r"^(\d{1,2})[:.,](\d{2})$", text)
     if not m or not (0 <= int(m.group(1)) <= 23) or not (0 <= int(m.group(2)) <= 59):
-        await update.message.reply_text("Не разобрала время. Формат ЧЧ:ММ, например 14:15, или нажмите «Не знаю точно» выше.")
+        await update.message.reply_text("Не разобрала время. Напишите часы и минуты через двоеточие или точку, например 14:15 или 14.15, или нажмите «Не знаю точно» выше.")
         return ASK_TIME
     context.user_data["time_str"] = f"{int(m.group(1)):02d}:{int(m.group(2)):02d}"
     return await ask_city(update, context)
@@ -226,10 +226,32 @@ async def sphere(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if chart["has_time"] and chart["rising"]:
         house_sign = ac.sign_in_house(chart["rising"]["sign"], s["house_num"])
         text = f"{s['house_texts'][house_sign]}\n\n{s['transition']} {s['planet_texts'][planet_sign]}"
+        await send_bot(context, chat_id, text, 1.2)
+
+        await send_bot(context, chat_id, f"Что с этим делать: {s['advice'][house_sign]}", 0.9)
+
+        forecast = context.user_data.get("forecast")
+        if forecast is None:
+            now = ac.to_jd(date.today().year, date.today().month, date.today().day, 0, 0)
+            forecast = ac.compute_forecast(chart, now, window_days=730)
+            context.user_data["forecast"] = forecast
+        relevant = [h for h in forecast if ac.house_of_sign(h["transit_sign"], chart["rising"]["sign"]) == s["house_num"]]
+        if relevant:
+            await send_bot(context, chat_id, "Ближайшие даты роста именно в этой сфере, на два года вперёд:", 0.7)
+            for h in relevant[:4]:
+                t = ct.TRANSIT_TEXTS[h["planet_key"]][h["point_key"]][h["aspect_key"]]
+                await send_bot(context, chat_id, f"{h['date_label']}: {t}.", 0.8)
+        else:
+            await send_bot(
+                context, chat_id,
+                "В ближайшие два года отдельных заметных дат именно для этой сферы не выпадает, "
+                "характер сферы от этого никуда не девается.",
+                0.8,
+            )
     else:
         text = (f"Без точного времени рождения не вижу, в каком доме у вас сейчас {s['title'].lower()}, "
                 f"но кое-что скажу и так. {s['planet_texts'][planet_sign]}")
-    await send_bot(context, chat_id, text, 1.2)
+        await send_bot(context, chat_id, text, 1.2)
 
 
 # ---------- прогноз ----------
@@ -248,7 +270,10 @@ async def forecast(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     1.2)
 
     now = ac.to_jd(date.today().year, date.today().month, date.today().day, 0, 0)
-    hits = ac.compute_forecast(chart, now, window_days=730)
+    hits = context.user_data.get("forecast")
+    if hits is None:
+        hits = ac.compute_forecast(chart, now, window_days=730)
+        context.user_data["forecast"] = hits
 
     if not hits:
         await send_bot(
