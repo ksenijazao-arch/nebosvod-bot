@@ -15,7 +15,9 @@ import asyncio
 import logging
 import os
 import re
+import threading
 from datetime import date
+from http.server import BaseHTTPRequestHandler, HTTPServer
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, ReplyKeyboardRemove, Update
 from telegram.ext import (
@@ -264,10 +266,32 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     return ConversationHandler.END
 
 
+class _HealthHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"Nebosvod bot is running")
+
+    def log_message(self, format, *args):
+        pass  # не засоряем логи проверками на живость
+
+
+def start_health_server():
+    """Render (и похожие площадки) ждут, что сервис слушает порт.
+    Сам бот работает через постоянный опрос Telegram и порт не использует,
+    так что здесь просто открываем его для проверки, что сервис жив."""
+    port = int(os.environ.get("PORT", "8080"))
+    server = HTTPServer(("0.0.0.0", port), _HealthHandler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    log.info("health-сервер слушает порт %s", port)
+
+
 def main():
     token = os.environ.get("BOT_TOKEN")
     if not token:
         raise SystemExit("Задайте переменную окружения BOT_TOKEN с токеном от @BotFather.")
+
+    start_health_server()
 
     application = Application.builder().token(token).build()
 
