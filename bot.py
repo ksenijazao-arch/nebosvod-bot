@@ -40,6 +40,7 @@ SKIP_TIME_CB = "skip_time"
 SKIP_CITY_CB = "skip_city"
 FORECAST_CB = "forecast"
 RESTART_CB = "restart"
+SPHERE_CB_PREFIX = "sphere:"
 
 
 def fmt_date(d: date) -> str:
@@ -153,12 +154,12 @@ async def deliver_chart(update: Update, context: ContextTypes.DEFAULT_TYPE, chat
 
     await send_bot(
         context, chat_id,
-        f"Ваше Солнце в знаке {chart['sun']['sign']}.\n\n{ct.SUN_TEXTS[chart['sun']['sign']]}",
+        f"Ваше Солнце в знаке {ac.SIGN_GENITIVE[chart['sun']['sign']]}.\n\n{ct.SUN_TEXTS[chart['sun']['sign']]}",
         1.3,
     )
     await send_bot(
         context, chat_id,
-        f"Луна в {chart['moon']['sign']}. {ct.MOON_TEXTS[chart['moon']['sign']]}",
+        f"Луна {ac.v_predlog(chart['moon']['sign'])} {ac.SIGN_PREPOSITIONAL[chart['moon']['sign']]}. {ct.MOON_TEXTS[chart['moon']['sign']]}",
         1.0,
     )
     if chart["has_time"]:
@@ -180,28 +181,55 @@ async def deliver_chart(update: Update, context: ContextTypes.DEFAULT_TYPE, chat
 
     await send_bot(
         context, chat_id,
-        f"Меркурий в {chart['mercury']['sign']}. {ct.MERCURY_TEXTS[chart['mercury']['sign']]}\n\n"
-        f"Венера в {chart['venus']['sign']}. {ct.VENUS_TEXTS[chart['venus']['sign']]}",
+        f"Меркурий {ac.v_predlog(chart['mercury']['sign'])} {ac.SIGN_PREPOSITIONAL[chart['mercury']['sign']]}. {ct.MERCURY_TEXTS[chart['mercury']['sign']]}\n\n"
+        f"Венера {ac.v_predlog(chart['venus']['sign'])} {ac.SIGN_PREPOSITIONAL[chart['venus']['sign']]}. {ct.VENUS_TEXTS[chart['venus']['sign']]}",
         1.4,
     )
     await send_bot(
         context, chat_id,
-        f"Марс в {chart['mars']['sign']}. {ct.MARS_TEXTS[chart['mars']['sign']]}\n\n"
-        f"Юпитер в {chart['jupiter']['sign']}. {ct.JUPITER_TEXTS[chart['jupiter']['sign']]}",
+        f"Марс {ac.v_predlog(chart['mars']['sign'])} {ac.SIGN_PREPOSITIONAL[chart['mars']['sign']]}. {ct.MARS_TEXTS[chart['mars']['sign']]}\n\n"
+        f"Юпитер {ac.v_predlog(chart['jupiter']['sign'])} {ac.SIGN_PREPOSITIONAL[chart['jupiter']['sign']]}. {ct.JUPITER_TEXTS[chart['jupiter']['sign']]}",
         1.4,
     )
     await send_bot(
         context, chat_id,
-        f"Сатурн в {chart['saturn']['sign']}. {ct.SATURN_TEXTS[chart['saturn']['sign']]}",
+        f"Сатурн {ac.v_predlog(chart['saturn']['sign'])} {ac.SIGN_PREPOSITIONAL[chart['saturn']['sign']]}. {ct.SATURN_TEXTS[chart['saturn']['sign']]}",
         1.2,
     )
 
     keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton(s["title"], callback_data=f"{SPHERE_CB_PREFIX}{key}") for key, s in list(ct.SPHERES.items())[:2]],
+        [InlineKeyboardButton(s["title"], callback_data=f"{SPHERE_CB_PREFIX}{key}") for key, s in list(ct.SPHERES.items())[2:]],
         [InlineKeyboardButton("Узнать важные даты", callback_data=FORECAST_CB)],
         [InlineKeyboardButton("Начать заново", callback_data=RESTART_CB)],
     ])
     await context.bot.send_message(chat_id=chat_id, text="Что дальше?", reply_markup=keyboard)
     return ConversationHandler.END
+
+
+# ---------- сферы жизни ----------
+
+async def sphere(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    chat_id = query.message.chat_id
+    sphere_key = query.data[len(SPHERE_CB_PREFIX):]
+    s = ct.SPHERES.get(sphere_key)
+    chart = context.user_data.get("chart")
+    if not s or not chart:
+        await context.bot.send_message(chat_id=chat_id, text="Сначала пройдите разбор заново: /start")
+        return
+
+    await send_bot(context, chat_id, f"Смотрю, что карта говорит про {s['title'].lower()}…", 0.7)
+
+    planet_sign = chart[s["planet_key"]]["sign"]
+    if chart["has_time"] and chart["rising"]:
+        house_sign = ac.sign_in_house(chart["rising"]["sign"], s["house_num"])
+        text = f"{s['house_texts'][house_sign]}\n\n{s['transition']} {s['planet_texts'][planet_sign]}"
+    else:
+        text = (f"Без точного времени рождения не вижу, в каком доме у вас сейчас {s['title'].lower()}, "
+                f"но кое-что скажу и так. {s['planet_texts'][planet_sign]}")
+    await send_bot(context, chat_id, text, 1.2)
 
 
 # ---------- прогноз ----------
@@ -233,10 +261,16 @@ async def forecast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         for h in hits[:6]:
             text = ct.TRANSIT_TEXTS[h["planet_key"]][h["point_key"]][h["aspect_key"]]
+            house_note = ""
+            if chart["has_time"] and chart["rising"]:
+                house_num = ac.house_of_sign(h["transit_sign"], chart["rising"]["sign"])
+                info = ct.HOUSE_INFO[house_num]
+                house_note = (f" Сейчас {ct.PLANET_LABEL[h['planet_key']]} идёт через ваш {info['label']}, "
+                              f"и заметнее всего это отразится на {info['tie']}.")
             await send_bot(
                 context, chat_id,
                 f"{h['date_label']}: {ct.PLANET_LABEL[h['planet_key']]} в {h['aspect_name']} "
-                f"к вашей натальной {ct.NATAL_LABEL[h['point_key']]}. {text}.",
+                f"к вашей натальной {ct.NATAL_LABEL[h['point_key']]}. {text}.{house_note}",
                 0.95,
             )
         if len(hits) > 6:
@@ -313,6 +347,7 @@ def main():
 
     application.add_handler(conv)
     application.add_handler(CallbackQueryHandler(forecast, pattern=f"^{FORECAST_CB}$"))
+    application.add_handler(CallbackQueryHandler(sphere, pattern=f"^{SPHERE_CB_PREFIX}"))
 
     log.info("Небосвод запущен, жду сообщений…")
     application.run_polling(allowed_updates=Update.ALL_TYPES)

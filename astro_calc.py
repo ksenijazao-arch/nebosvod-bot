@@ -4,10 +4,51 @@
 формулы валидированы отдельно: периоды обращения планет, максимальная
 элонгация Меркурия/Венеры, совпадение асцендента с Солнцем на восходе.
 """
+import json
 import math
+import os
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 SIGNS = ["Овен", "Телец", "Близнецы", "Рак", "Лев", "Дева", "Весы",
          "Скорпион", "Стрелец", "Козерог", "Водолей", "Рыбы"]
+
+SIGN_PREPOSITIONAL = {
+    "Овен": "Овне", "Телец": "Тельце", "Близнецы": "Близнецах", "Рак": "Раке",
+    "Лев": "Льве", "Дева": "Деве", "Весы": "Весах", "Скорпион": "Скорпионе",
+    "Стрелец": "Стрельце", "Козерог": "Козероге", "Водолей": "Водолее", "Рыбы": "Рыбах",
+}
+SIGN_GENITIVE = {
+    "Овен": "Овна", "Телец": "Тельца", "Близнецы": "Близнецов", "Рак": "Рака",
+    "Лев": "Льва", "Дева": "Девы", "Весы": "Весов", "Скорпион": "Скорпиона",
+    "Стрелец": "Стрельца", "Козерог": "Козерога", "Водолей": "Водолея", "Рыбы": "Рыб",
+}
+
+
+def v_predlog(sign):
+    """Предлог 'в'/'во' перед знаком (Лев -> 'во Льве', остальные -> 'в X')."""
+    return "во" if sign == "Лев" else "в"
+
+
+_CITIES_PATH = os.path.join(os.path.dirname(__file__), "cities_data.json")
+with open(_CITIES_PATH, encoding="utf-8") as _f:
+    _CITY_INDEX = json.load(_f)
+
+
+def geocode_city(name):
+    """Ищет город по названию (любому известному варианту, включая кириллицу).
+    Возвращает {'name','lat','lon','tz'} или None, если не нашлось."""
+    if not name:
+        return None
+    return _CITY_INDEX.get(name.strip().lower())
+
+
+def utc_offset_hours(tz_name, year, month, day, hour, minute):
+    """Настоящее историческое смещение от UTC для конкретной даты и часового
+    пояса (учитывает переходы на летнее время и реформы прошлых лет, а не
+    только текущее смещение)."""
+    dt = datetime(year, month, day, hour, minute, tzinfo=ZoneInfo(tz_name))
+    return dt.utcoffset().total_seconds() / 3600
 
 
 def norm360(x):
@@ -134,20 +175,6 @@ def planet_longitude(key, jd):
     return norm360(math.degrees(math.atan2(py - ey, px - ex)))
 
 
-CITY_COORDS = {
-    "москва": dict(lat=55.7558, lon=37.6173, tz=3, label="Москва"),
-    "санкт-петербург": dict(lat=59.9311, lon=30.3609, tz=3, label="Санкт-Петербург"),
-    "калининград": dict(lat=54.7104, lon=20.4522, tz=2, label="Калининград"),
-    "новосибирск": dict(lat=55.0084, lon=82.9357, tz=7, label="Новосибирск"),
-    "екатеринбург": dict(lat=56.8389, lon=60.6057, tz=5, label="Екатеринбург"),
-    "казань": dict(lat=55.7887, lon=49.1221, tz=3, label="Казань"),
-    "краснодар": dict(lat=45.0355, lon=38.9753, tz=3, label="Краснодар"),
-    "киев": dict(lat=50.4501, lon=30.5234, tz=2, label="Киев"),
-    "минск": dict(lat=53.9006, lon=27.5590, tz=3, label="Минск"),
-    "алматы": dict(lat=43.2220, lon=76.8512, tz=6, label="Алматы"),
-}
-
-
 def compute_chart(date_str, time_str, city_label):
     y, m, d = (int(x) for x in date_str.split("-"))
     has_time = bool(time_str)
@@ -155,15 +182,20 @@ def compute_chart(date_str, time_str, city_label):
     if has_time:
         hh, mm = (int(x) for x in time_str.split(":"))
         hour, minute = hh, mm
-    key = None
-    for k, v in CITY_COORDS.items():
-        if v["label"].lower() == (city_label or "").strip().lower():
-            key = k
-            break
-    city = CITY_COORDS.get(key, CITY_COORDS["москва"])
-    used_default_city = key is None
-    utc_hour = hour - city["tz"]
-    jd = to_jd(y, m, d, utc_hour, minute)
+
+    city_match = geocode_city(city_label)
+    used_default_city = city_match is None
+    if city_match:
+        city = {"lat": city_match["lat"], "lon": city_match["lon"], "label": city_match["name"]}
+        tz_offset = utc_offset_hours(city_match["tz"], y, m, d, hour, minute)
+    else:
+        city = {"lat": 55.7558, "lon": 37.6173, "label": "Москва"}
+        tz_offset = utc_offset_hours("Europe/Moscow", y, m, d, hour, minute)
+
+    utc_hour_float = hour - tz_offset
+    utc_hour = int(utc_hour_float)
+    utc_minute = minute + round((utc_hour_float - utc_hour) * 60)
+    jd = to_jd(y, m, d, utc_hour, utc_minute)
 
     chart = {
         "sun": sign_of(sun_longitude(jd)),
@@ -231,6 +263,18 @@ def compute_forecast(chart, now_jd, window_days=730):
             for h in hits:
                 h["planet_key"] = planet_key
                 h["point_key"] = point_key
+                h["transit_sign"] = sign_of(planet_longitude(planet_key, now_jd + h["day_offset"]))["sign"]
                 results.append(h)
     results.sort(key=lambda h: h["day_offset"])
     return results
+
+
+def house_of_sign(sign_name, asc_sign_name):
+    idx = SIGNS.index(sign_name)
+    asc_idx = SIGNS.index(asc_sign_name)
+    return ((idx - asc_idx) % 12) + 1
+
+
+def sign_in_house(asc_sign_name, house_num):
+    asc_idx = SIGNS.index(asc_sign_name)
+    return SIGNS[(asc_idx + house_num - 1) % 12]
