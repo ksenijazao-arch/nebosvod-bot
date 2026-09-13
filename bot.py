@@ -63,6 +63,10 @@ async def send_bot(context: ContextTypes.DEFAULT_TYPE, chat_id: int, text: str, 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data.clear()
     chat_id = update.effective_chat.id
+    avatar_path = os.path.join(os.path.dirname(__file__), "avatar.png")
+    if os.path.exists(avatar_path):
+        with open(avatar_path, "rb") as f:
+            await context.bot.send_photo(chat_id=chat_id, photo=f)
     await send_bot(context, chat_id,
                     "Здравствуйте! Я «Небосвод», бот для индивидуального разбора натальной карты.", 0.6)
     await send_bot(context, chat_id,
@@ -141,13 +145,16 @@ async def skip_city(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
 # ---------- сборка и отправка разбора ----------
 
+SPHERE_EMOJI = {"money": "💰", "love": "❤️", "career": "💼", "health": "🌿"}
+
+
 def main_menu_keyboard():
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton(s["title"], callback_data=f"{SPHERE_CB_PREFIX}{key}") for key, s in list(ct.SPHERES.items())[:2]],
-        [InlineKeyboardButton(s["title"], callback_data=f"{SPHERE_CB_PREFIX}{key}") for key, s in list(ct.SPHERES.items())[2:]],
-        [InlineKeyboardButton("Узнать важные даты", callback_data=FORECAST_CB)],
-        [InlineKeyboardButton("★ Непрожитые жизни", callback_data=UNLIVED_CB)],
-        [InlineKeyboardButton("Начать заново", callback_data=RESTART_CB)],
+        [InlineKeyboardButton(f"{SPHERE_EMOJI[key]} {s['title']}", callback_data=f"{SPHERE_CB_PREFIX}{key}") for key, s in list(ct.SPHERES.items())[:2]],
+        [InlineKeyboardButton(f"{SPHERE_EMOJI[key]} {s['title']}", callback_data=f"{SPHERE_CB_PREFIX}{key}") for key, s in list(ct.SPHERES.items())[2:]],
+        [InlineKeyboardButton("🔭 Узнать важные даты", callback_data=FORECAST_CB)],
+        [InlineKeyboardButton("✨ Непрожитые жизни", callback_data=UNLIVED_CB)],
+        [InlineKeyboardButton("🔄 Начать заново", callback_data=RESTART_CB)],
     ])
 
 
@@ -234,8 +241,7 @@ async def sphere(update: Update, context: ContextTypes.DEFAULT_TYPE):
     planet_sign = chart[s["planet_key"]]["sign"]
     if chart["has_time"] and chart["rising"]:
         house_sign = ac.sign_in_house(chart["rising"]["sign"], s["house_num"])
-        await send_bot(context, chat_id, s["house_texts"][house_sign], 1.3)
-        await send_bot(context, chat_id, f"Что с этим делать: {s['advice'][house_sign]}", 0.9)
+        await send_bot(context, chat_id, f"{s['house_texts'][house_sign]}\n\nЧто с этим делать: {s['advice'][house_sign]}", 1.4)
 
         cache_key = f"house_ingress_{s['house_num']}"
         ingress_hits = context.user_data.get(cache_key)
@@ -259,7 +265,7 @@ async def sphere(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data[cache_key] = ingress_hits
 
         if ingress_hits:
-            await send_bot(context, chat_id, "Ближайшие даты, когда эта сфера особенно активна, на два года вперёд:", 0.7)
+            lines = ["🔭 Ближайшие даты, когда эта сфера особенно активна:"]
             for h in ingress_hits[:5]:
                 bank = ct.PLANET_SPHERE_ACTION if h["variant"] == 0 else ct.PLANET_SPHERE_ACTION_V2
                 action = bank[h["planet_key"]][sphere_key]
@@ -267,7 +273,8 @@ async def sphere(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     lead = f"{ct.PLANET_LABEL[h['planet_key']]} сейчас здесь, но движется попятно"
                 else:
                     lead = ct.PLANET_REASON[h["planet_key"]]
-                await send_bot(context, chat_id, f"{h['date_label']}. {lead}: {action}. {ct.PLANET_WEIGHT[h['planet_key']]}", 0.9)
+                lines.append(f"\n📅 {h['date_label']}. {lead}: {action}. {ct.PLANET_WEIGHT[h['planet_key']]}")
+            await send_bot(context, chat_id, "\n".join(lines), 1.6)
         else:
             await send_bot(
                 context, chat_id,
@@ -304,13 +311,7 @@ async def unlived(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    await send_bot(context, chat_id, "Смотрю на узлы и Сатурн в вашей карте…", 1.2)
-    await send_bot(
-        context, chat_id,
-        "У каждого в карте есть путь, которым вы прошли, и путь, который звал, но остался в стороне. "
-        "Вот что я вижу в вашем случае.",
-        1.3,
-    )
+    await send_bot(context, chat_id, "Смотрю на узлы и Сатурн в вашей карте…", 1.0)
 
     house_num = ac.house_of_sign(chart["north_node"]["sign"], chart["rising"]["sign"])
     saturn_sentence = f"Ваш Сатурн в {ac.SIGN_PREPOSITIONAL[chart['saturn']['sign']]} показывает, что вы способны {ct.SATURN_MAGNITUDE[chart['saturn']['sign']]}."
@@ -320,10 +321,14 @@ async def unlived(update: Update, context: ContextTypes.DEFAULT_TYPE):
     advice1 = ct.HOUSE_RETURN_ADVICE[str(house_num)]
     advice2 = ct.HOUSE_RETURN_ADVICE_2[str(house_num)]
 
-    await send_bot(context, chat_id, potential, 2.0)
-    await send_bot(context, chat_id, f"А если бы вы тогда выбрали иначе: {vision}", 1.8)
-    await send_bot(context, chat_id, validation, 1.4)
-    await send_bot(context, chat_id, f"Что можно сделать уже сейчас:\n1. {advice1}\n2. {advice2}", 1.6)
+    await send_bot(
+        context, chat_id,
+        "У каждого в карте есть путь, которым вы прошли, и путь, который звал, но остался в стороне. "
+        f"Вот что я вижу в вашем случае.\n\n{potential}",
+        2.2,
+    )
+    await send_bot(context, chat_id, f"А если бы вы тогда выбрали иначе: {vision}\n\n{validation}", 2.0)
+    await send_bot(context, chat_id, f"✅ Что можно сделать уже сейчас:\n1. {advice1}\n2. {advice2}", 1.6)
 
     now = ac.to_jd(date.today().year, date.today().month, date.today().day, 0, 0)
     power_hits = []
@@ -337,9 +342,9 @@ async def unlived(update: Update, context: ContextTypes.DEFAULT_TYPE):
         tie = ct.HOUSE_INFO[house_num]["tie"]
         await send_bot(
             context, chat_id,
-            f"И ещё одно: {h['date_label']}. {ct.PLANET_REASON[h['planet_key']]}, прямо там, где живёт этот нереализованный путь. "
+            f"🌟 И ещё одно: 📅 {h['date_label']}. {ct.PLANET_REASON[h['planet_key']]}, прямо там, где живёт этот нереализованный путь. "
             f"Особенно легко в этот день повлиять на {tie}. {ct.PLANET_WEIGHT[h['planet_key']]}",
-            1.6,
+            1.4,
         )
     await send_menu(context, chat_id)
 
