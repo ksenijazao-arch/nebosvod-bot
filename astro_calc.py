@@ -70,7 +70,7 @@ def to_jd(year, month, day, utc_hour, utc_minute):
     return jd0 + frac
 
 
-def jd_to_date_label(jd):
+def jd_to_ymd(jd):
     z = math.floor(jd + 0.5)
     a2 = z
     if z >= 2299161:
@@ -83,6 +83,23 @@ def jd_to_date_label(jd):
     day = math.floor(b2 - d2 - math.floor(30.6001 * e2))
     month = int(e2 - 1) if e2 < 14 else int(e2 - 13)
     year = int(c2 - 4716) if month > 2 else int(c2 - 4715)
+    return year, month, day
+
+
+def year_word(n):
+    n = abs(n) % 100
+    n1 = n % 10
+    if 11 <= n <= 14:
+        return "лет"
+    if n1 == 1:
+        return "год"
+    if 2 <= n1 <= 4:
+        return "года"
+    return "лет"
+
+
+def jd_to_date_label(jd):
+    year, month, day = jd_to_ymd(jd)
     months = ["янв", "фев", "мар", "апр", "мая", "июн", "июл", "авг", "сен", "окт", "ноя", "дек"]
     return f"{day} {months[month - 1]} {year}"
 
@@ -217,6 +234,8 @@ def compute_chart(date_str, time_str, city_label):
         "rising": sign_of(ascendant(jd, city["lat"], city["lon"])) if has_time else None,
         "north_node": sign_of(north_node_lon),
         "south_node": sign_of(north_node_lon + 180),
+        "north_node_lon": north_node_lon,
+        "birth_jd": jd,
         "has_time": has_time,
         "city": city,
         "used_default_city": used_default_city,

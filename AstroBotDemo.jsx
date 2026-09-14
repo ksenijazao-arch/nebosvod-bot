@@ -396,6 +396,18 @@ const SATURN_MAGNITUDE = {
   "Рыбы": "создать или сделать для кого-то то, что запомнят даже спустя годы после встречи с вами",
 };
 
+const NODE_SATURN_FUTURE = {
+  conjunction: "А впереди у вас будет ещё один такой момент: в {age} {year_word}, примерно в {month_year}, транзитный Сатурн снова встанет точно на ваш Северный узел. Тогда этот путь получит ещё один шанс заявить о себе в полную силу, особенно там, где касается {tie}. То, что вы делаете сейчас, определяет, с чем вы придёте к этой дате.",
+  opposition: "А впереди у вас будет ещё один такой момент: в {age} {year_word}, примерно в {month_year}, транзитный Сатурн снова встанет напротив вашего Северного узла. Обычно это время, когда откладывать дальше уже не получается, особенно там, где касается {tie}. То, что вы делаете сейчас, определяет, с чем вы придёте к этой дате.",
+};
+const RETRO_NARRATIVES = {
+  mercury: "Ваш Меркурий при рождении двигался в обратную сторону. Часть вашего мышления с самого начала была обращена внутрь себя, не наружу. Вы часто продумываете мысль до конца ещё до того, как произнести её вслух, и многое из того, что вы думаете, так и остаётся не сказанным. Где-то рядом живёт версия вас, которая говорит вслух ровно то же самое, без внутренней паузы перед словами.",
+  venus: "Ваша Венера при рождении двигалась в обратную сторону. Часть вашей способности любить и ценить прекрасное с самого начала была обращена внутрь себя, не наружу. У вас есть глубокое чувство привязанности и красоты, которое редко показывается целиком, даже самым близким людям. Где-то рядом живёт версия вас, которая любит настолько же сильно, но не прячет это за сдержанностью.",
+  mars: "Ваш Марс при рождении двигался в обратную сторону. Часть вашей способности действовать и хотеть открыто с самого начала была обращена внутрь себя, не наружу. Вы редко бросаетесь в дело первой, чаще подолгу взвешиваете, прежде чем сделать шаг. Где-то рядом живёт версия вас, у которой то же самое желание, но без долгой паузы перед действием.",
+  jupiter: "Ваш Юпитер при рождении двигался в обратную сторону. Часть вашей веры и понимания смысла с самого начала была обращена внутрь себя, не наружу. Вы редко перенимаете чужую философию целиком, скорее выстраиваете собственную, часто не показывая её другим. Где-то рядом живёт версия вас, которая открыто учит или ведёт за собой других этой же верой.",
+  saturn: "Ваш Сатурн при рождении двигался в обратную сторону. Часть вашего отношения к дисциплине и ответственности с самого начала была обращена внутрь себя, не наружу. Вы чаще судите себя по собственным, внутренним правилам, чем по тем, что приняты вокруг, и редко просите внешнего признания за свою дисциплину. Где-то рядом живёт версия вас, для которой те же правила видны и признаны всеми.",
+};
+
 const HOUSE_POTENTIAL = {
   "1": "Где-то был момент, когда перед вами лежал путь к тому, чтобы стать совсем другим человеком, узнаваемым по-новому. {saturn} Похоже, страх потерять узнаваемость для тех, кто уже знает вас прежней, удержал вас на привычном облике.",
   "2": "Где-то был момент, когда перед вами лежал путь к настоящей финансовой независимости, к деньгам, заработанным полностью на своих условиях, не по чужим правилам. {saturn} Похоже, страх остаться без привычной опоры удержал вас на этом пути.",
@@ -521,6 +533,12 @@ const PLANET_SPHERE_ACTION_V2 = {
     health: "пройдите обследование, которое откладывали дольше, чем стоило",
   },
 };
+
+const NODE_SATURN_PAST = {
+  conjunction: "Вот что можно проверить прямо по датам: в {age} {year_word}, примерно в {month_year}, транзитный Сатурн встал ровно на ваш Северный узел.\n\nЭто реальное астрономическое событие, не метафора: Сатурн делает полный круг по небу почти за тридцать лет, и за всю жизнь лишь несколько раз проходит точно через точку вашего узла. Соединение считается самым сильным из этих моментов.\n\nОбычно в этом возрасте приходится повзрослеть быстрее, чем хотелось, или принять решение, которое определяет многое дальше, особенно там, где касается {tie}.\n\nВспомните, что происходило в вашей жизни примерно тогда.",
+  opposition: "Вот что можно проверить прямо по датам: в {age} {year_word}, примерно в {month_year}, транзитный Сатурн встал напротив вашего Северного узла.\n\nЭто реальное астрономическое событие, не метафора: Сатурн делает полный круг по небу почти за тридцать лет, и ровно на середине этого круга оказывается напротив точки вашего узла, что случается лишь несколько раз за жизнь. Оппозиция обычно ощущается как напряжение между привычным и тем, к чему давно тянет.\n\nОбычно в этот период привычный путь вдруг перестаёт устраивать, и то самое нереализованное желание заявляет о себе особенно громко, особенно там, где касается {tie}.\n\nВспомните, что происходило в вашей жизни примерно тогда.",
+};
+const MONTHS_PREP = ["январе","феврале","марте","апреле","мае","июне","июле","августе","сентябре","октябре","ноябре","декабре"];
 
 const HOUSE_RETURN_ADVICE_2 = {
   1: "Найдите фотографию себя из времени, когда чувствовали себя больше всего собой, и держите её на видном месте как напоминание.",
@@ -731,22 +749,37 @@ function computeChart(dateStr, timeStr, cityLabel) {
   const jupiter = signOf(planetLongitude("jupiter", jd));
   const saturn = signOf(planetLongitude("saturn", jd));
   const rising = hasTime ? signOf(ascendant(jd, city.lat, city.lon)) : null;
-  const northNode = signOf(northNodeLongitude(jd));
-  const southNode = signOf(northNodeLongitude(jd) + 180);
+  const northNodeLon = northNodeLongitude(jd);
+  const northNode = signOf(northNodeLon);
+  const southNode = signOf(northNodeLon + 180);
 
-  return { sun, moon, mercury, venus, mars, jupiter, saturn, rising, northNode, southNode, hasTime, city, usedDefaultCity };
+  return { sun, moon, mercury, venus, mars, jupiter, saturn, rising, northNode, southNode, northNodeLon, birthJD: jd, hasTime, city, usedDefaultCity };
 }
 
 /* ============ ПРОГНОЗ: поиск дат, когда транзитная планета образует аспект к натальной точке ============ */
 function angDiff(a, b) { let d = Math.abs(norm360(a - b)); if (d > 180) d = 360 - d; return d; }
 
-function jdToDateLabel(jd) {
+function jdToYMD(jd) {
   let Z = Math.floor(jd + 0.5), A2 = Z;
   if (Z >= 2299161) { const al = Math.floor((Z - 1867216.25) / 36524.25); A2 = Z + 1 + al - Math.floor(al / 4); }
   const B2 = A2 + 1524, C2 = Math.floor((B2 - 122.1) / 365.25), D2 = Math.floor(365.25 * C2), E2 = Math.floor((B2 - D2) / 30.6001);
   const day = Math.floor(B2 - D2 - Math.floor(30.6001 * E2));
   const month = E2 < 14 ? E2 - 1 : E2 - 13;
   const year = month > 2 ? C2 - 4716 : C2 - 4715;
+  return { year, month, day };
+}
+
+function yearWord(n) {
+  n = Math.abs(n) % 100;
+  const n1 = n % 10;
+  if (n >= 11 && n <= 14) return "лет";
+  if (n1 === 1) return "год";
+  if (n1 >= 2 && n1 <= 4) return "года";
+  return "лет";
+}
+
+function jdToDateLabel(jd) {
+  const { year, month, day } = jdToYMD(jd);
   const months = ["янв","фев","мар","апр","мая","июн","июл","авг","сен","окт","ноя","дек"];
   return `${day} ${months[month - 1]} ${year}`;
 }
@@ -844,6 +877,7 @@ function Bubble({ from, children }) {
           padding: "11px 15px",
           fontSize: 15,
           lineHeight: 1.5,
+          whiteSpace: "pre-line",
           boxShadow: "0 1px 2px rgba(35,34,49,0.08)",
         }}
       >
@@ -1139,10 +1173,56 @@ export default function AstroBotDemo() {
       const tie = HOUSE_INFO[houseNum].tie;
       await pushBot(
         <>
-          И ещё одно: {h.dateLabel}. {PLANET_REASON[h.planetKey]}, прямо там, где живёт этот нереализованный путь. Особенно легко в этот день повлиять на {tie}. {PLANET_WEIGHT[h.planetKey]}
+          🌟 И ещё одно: 📅 {h.dateLabel}. {PLANET_REASON[h.planetKey]}, прямо там, где живёт этот нереализованный путь. Особенно легко в этот день повлиять на {tie}. {PLANET_WEIGHT[h.planetKey]}
         </>,
         1600
       );
+    }
+
+    const birthJD = chartData.birthJD;
+    const lifespanDays = Math.floor(nowJD - birthJD);
+    if (lifespanDays > 0) {
+      const pastHits = findTransitHits(chartData.northNodeLon, "saturn", birthJD, lifespanDays);
+      const majorHits = pastHits.filter((x) => x.aspectKey === "conjunction" || x.aspectKey === "opposition");
+      if (majorHits.length) {
+        const lastHit = majorHits[majorHits.length - 1];
+        const eventJD = birthJD + lastHit.dayOffset;
+        const { year: ey, month: em } = jdToYMD(eventJD);
+        const { year: by, month: bm, day: bd } = jdToYMD(birthJD);
+        const age = ey - by - (em < bm || (em === bm && 1 < bd) ? 1 : 0);
+        const monthYear = `${MONTHS_PREP[em - 1]} ${ey}`;
+        const template = NODE_SATURN_PAST[lastHit.aspectKey];
+        const text = template
+          .replace("{age}", age)
+          .replace("{year_word}", yearWord(age))
+          .replace("{month_year}", monthYear)
+          .replace("{tie}", HOUSE_INFO[houseNum].tie);
+        await pushBot(<>{text}</>, 2400);
+      }
+
+      const { year: by2, month: bm2, day: bd2 } = jdToYMD(birthJD);
+      const futureHits = findTransitHits(chartData.northNodeLon, "saturn", nowJD, 6570);
+      const futureMajor = futureHits.filter((x) => x.aspectKey === "conjunction" || x.aspectKey === "opposition");
+      if (futureMajor.length) {
+        const nxt = futureMajor[0];
+        const eventJD2 = nowJD + nxt.dayOffset;
+        const { year: ey2, month: em2 } = jdToYMD(eventJD2);
+        const age2 = ey2 - by2 - (em2 < bm2 || (em2 === bm2 && 1 < bd2) ? 1 : 0);
+        const monthYear2 = `${MONTHS_PREP[em2 - 1]} ${ey2}`;
+        const text2 = NODE_SATURN_FUTURE[nxt.aspectKey]
+          .replace("{age}", age2)
+          .replace("{year_word}", yearWord(age2))
+          .replace("{month_year}", monthYear2)
+          .replace("{tie}", HOUSE_INFO[houseNum].tie);
+        await pushBot(<>{text2}</>, 2200);
+      }
+    }
+
+    for (const planetKey of ["venus", "mars", "mercury", "jupiter", "saturn"]) {
+      if (isRetrograde(planetKey, birthJD)) {
+        await pushBot(<>✨ {RETRO_NARRATIVES[planetKey]}</>, 2200);
+        break;
+      }
     }
   }
 

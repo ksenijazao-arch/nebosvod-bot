@@ -19,6 +19,8 @@ import threading
 from datetime import date
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
+import psycopg2
+
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, ReplyKeyboardRemove, Update
 from telegram.ext import (
     Application, CallbackQueryHandler, CommandHandler, ContextTypes,
@@ -27,6 +29,38 @@ from telegram.ext import (
 
 import astro_calc as ac
 import content as ct
+
+DATABASE_URL = os.environ.get("DATABASE_URL")
+BROADCAST_PASSWORD = os.environ.get("BROADCAST_PASSWORD", "")
+
+
+def db_connect():
+    return psycopg2.connect(DATABASE_URL, sslmode="require")
+
+
+def db_init():
+    if not DATABASE_URL:
+        return
+    with db_connect() as conn, conn.cursor() as cur:
+        cur.execute("CREATE TABLE IF NOT EXISTS users (chat_id BIGINT PRIMARY KEY, first_seen TIMESTAMPTZ DEFAULT now())")
+        conn.commit()
+
+
+def db_remember_user(chat_id):
+    if not DATABASE_URL:
+        return
+    try:
+        with db_connect() as conn, conn.cursor() as cur:
+            cur.execute("INSERT INTO users (chat_id) VALUES (%s) ON CONFLICT DO NOTHING", (chat_id,))
+            conn.commit()
+    except Exception:
+        logging.exception("не удалось сохранить пользователя")
+
+
+def db_all_users():
+    with db_connect() as conn, conn.cursor() as cur:
+        cur.execute("SELECT chat_id FROM users")
+        return [row[0] for row in cur.fetchall()]
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
 log = logging.getLogger("nebosvod")
@@ -63,6 +97,7 @@ async def send_bot(context: ContextTypes.DEFAULT_TYPE, chat_id: int, text: str, 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data.clear()
     chat_id = update.effective_chat.id
+    db_remember_user(chat_id)
     avatar_path = os.path.join(os.path.dirname(__file__), "avatar.png")
     if os.path.exists(avatar_path):
         with open(avatar_path, "rb") as f:
@@ -346,6 +381,46 @@ async def unlived(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"Особенно легко в этот день повлиять на {tie}. {ct.PLANET_WEIGHT[h['planet_key']]}",
             1.4,
         )
+
+    birth_jd = chart["birth_jd"]
+    lifespan_days = int(now - birth_jd)
+    if lifespan_days > 0:
+        past_hits = ac.find_transit_hits(chart["north_node_lon"], "saturn", birth_jd, lifespan_days)
+        major = [h for h in past_hits if h["aspect_key"] in ("conjunction", "opposition")]
+        if major:
+            last = major[-1]
+            event_jd = birth_jd + last["day_offset"]
+            ey, em, _ = ac.jd_to_ymd(event_jd)
+            by, bm, bd = ac.jd_to_ymd(birth_jd)
+            age = ey - by - (1 if (em, 1) < (bm, bd) else 0)
+            month_year = f"{ct.MONTHS_PREP[em - 1]} {ey}"
+            template = ct.NODE_SATURN_PAST[last["aspect_key"]]
+            await send_bot(
+                context, chat_id,
+                template.format(age=age, year_word=ac.year_word(age), month_year=month_year, tie=ct.HOUSE_INFO[house_num]["tie"]),
+                2.4,
+            )
+
+        future_hits = ac.find_transit_hits(chart["north_node_lon"], "saturn", now, 6570)
+        future_major = [h for h in future_hits if h["aspect_key"] in ("conjunction", "opposition")]
+        if future_major:
+            nxt = future_major[0]
+            event_jd = now + nxt["day_offset"]
+            ey, em, _ = ac.jd_to_ymd(event_jd)
+            age = ey - by - (1 if (em, 1) < (bm, bd) else 0)
+            month_year = f"{ct.MONTHS_PREP[em - 1]} {ey}"
+            template = ct.NODE_SATURN_FUTURE[nxt["aspect_key"]]
+            await send_bot(
+                context, chat_id,
+                template.format(age=age, year_word=ac.year_word(age), month_year=month_year, tie=ct.HOUSE_INFO[house_num]["tie"]),
+                2.2,
+            )
+
+    for planet_key in ["venus", "mars", "mercury", "jupiter", "saturn"]:
+        if ac.is_retrograde(planet_key, birth_jd):
+            await send_bot(context, chat_id, "✨ " + ct.RETRO_NARRATIVES[planet_key], 2.2)
+            break
+
     await send_menu(context, chat_id)
 
 
@@ -439,12 +514,33 @@ def start_health_server():
     log.info("health-сервер слушает порт %s", port)
 
 
+async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    text = update.message.text or ""
+    parts = text.split(maxsplit=2)
+    if len(parts) < 3 or parts[1] != BROADCAST_PASSWORD or not BROADCAST_PASSWORD:
+        await update.message.reply_text("Формат: /broadcast пароль текст сообщения")
+        return
+    message = parts[2]
+    users = db_all_users()
+    sent, failed = 0, 0
+    for uid in users:
+        try:
+            await context.bot.send_message(chat_id=uid, text=message)
+            sent += 1
+        except Exception:
+            failed += 1
+        await asyncio.sleep(0.05)
+    await update.message.reply_text(f"Разослано: {sent}, не доставлено: {failed}, всего в базе: {len(users)}.")
+
+
 def main():
     token = os.environ.get("BOT_TOKEN")
     if not token:
         raise SystemExit("Задайте переменную окружения BOT_TOKEN с токеном от @BotFather.")
 
     start_health_server()
+    db_init()
 
     application = Application.builder().token(token).build()
 
@@ -468,6 +564,7 @@ def main():
     application.add_handler(CallbackQueryHandler(forecast, pattern=f"^{FORECAST_CB}$"))
     application.add_handler(CallbackQueryHandler(sphere, pattern=f"^{SPHERE_CB_PREFIX}"))
     application.add_handler(CallbackQueryHandler(unlived, pattern=f"^{UNLIVED_CB}$"))
+    application.add_handler(CommandHandler("broadcast", broadcast))
 
     log.info("Небосвод запущен, жду сообщений…")
     application.run_polling(allowed_updates=Update.ALL_TYPES)
