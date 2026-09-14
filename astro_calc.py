@@ -289,3 +289,28 @@ def house_of_sign(sign_name, asc_sign_name):
 def sign_in_house(asc_sign_name, house_num):
     asc_idx = SIGNS.index(asc_sign_name)
     return SIGNS[(asc_idx + house_num - 1) % 12]
+
+
+def find_house_ingresses(planet_key, target_house, asc_sign_name, start_jd, window_days=730):
+    """Находит даты, когда транзитная планета входит в конкретный дом карты.
+    Это не привязано к аспекту с натальной точкой, поэтому событий заметно
+    больше и они регулярнее, чем в find_transit_hits: подходит для вопроса
+    "когда именно эта сфера жизни активна", а не только "когда точный аспект"."""
+    houses = []
+    for t in range(window_days + 1):
+        sign = sign_of(planet_longitude(planet_key, start_jd + t))["sign"]
+        houses.append(house_of_sign(sign, asc_sign_name))
+    ingresses = []
+    for t in range(1, window_days + 1):
+        if houses[t] == target_house and houses[t - 1] != target_house:
+            ingresses.append(t)
+    return ingresses
+
+
+def is_retrograde(planet_key, jd):
+    """True, если планета в этот момент движется попятно (ретроградно):
+    долгота через день меньше, чем сейчас, с учётом перехода через 360°."""
+    lon_now = planet_longitude(planet_key, jd)
+    lon_next = planet_longitude(planet_key, jd + 1)
+    diff = norm360(lon_next - lon_now)
+    return diff > 180
