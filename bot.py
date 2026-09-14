@@ -7,7 +7,7 @@
     python bot.py
 
 Как это работает:
-    /start -> дата рождения -> время (можно пропустить) -> город (можно пропустить)
+    /start -> пол -> дата рождения -> время (можно пропустить) -> город (можно пропустить)
     -> бот присылает разбор по восьми точкам карты
     -> кнопка "Узнать важные даты" присылает прогноз на два года по Юпитеру и Сатурну
 """
@@ -65,11 +65,12 @@ def db_all_users():
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
 log = logging.getLogger("nebosvod")
 
-ASK_DATE, ASK_TIME, ASK_CITY = range(3)
+ASK_GENDER, ASK_DATE, ASK_TIME, ASK_CITY = range(4)
 
 MONTHS_GEN = ["января", "февраля", "марта", "апреля", "мая", "июня",
               "июля", "августа", "сентября", "октября", "ноября", "декабря"]
 
+GENDER_CB_PREFIX = "gender:"
 SKIP_TIME_CB = "skip_time"
 SKIP_CITY_CB = "skip_city"
 FORECAST_CB = "forecast"
@@ -89,7 +90,24 @@ async def typing_delay(context: ContextTypes.DEFAULT_TYPE, chat_id: int, seconds
 
 async def send_bot(context: ContextTypes.DEFAULT_TYPE, chat_id: int, text: str, delay: float = 1.0, **kwargs):
     await typing_delay(context, chat_id, delay)
+    text = ct.personalize_text(text, context.user_data.get("gender"))
     await context.bot.send_message(chat_id=chat_id, text=text, **kwargs)
+
+
+def gender_keyboard():
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton("Мужчина", callback_data=f"{GENDER_CB_PREFIX}male"),
+        InlineKeyboardButton("Женщина", callback_data=f"{GENDER_CB_PREFIX}female"),
+    ]])
+
+
+async def ask_birth_date(context, chat_id: int) -> int:
+    await send_bot(
+        context, chat_id,
+        "Теперь дата рождения. Пришлите её в формате ДД.ММ.ГГГГ — например, 20.08.1993.",
+        0.7,
+    )
+    return ASK_DATE
 
 
 # ---------- разговор: сбор даты, времени, города ----------
@@ -102,12 +120,29 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     if os.path.exists(avatar_path):
         with open(avatar_path, "rb") as f:
             await context.bot.send_photo(chat_id=chat_id, photo=f)
-    await send_bot(context, chat_id,
-                    "Здравствуйте! Я «Небосвод», бот для индивидуального разбора натальной карты.", 0.6)
-    await send_bot(context, chat_id,
-                    "Чтобы найти ваше Солнце, Луну и ещё шесть точек карты, мне нужны дата, время и город рождения.\n\n"
-                    "Начнём с даты. Пришлите её в формате ДД.ММ.ГГГГ, например 20.08.1993.", 0.8)
-    return ASK_DATE
+    await send_bot(
+        context, chat_id,
+        "Здравствуйте! Я «Небосвод». Соберу натальную карту и разберу её в нескольких слоях: планеты, дома, важные периоды и общий баланс карты.",
+        0.6,
+    )
+    await send_bot(
+        context, chat_id,
+        "Сначала уточню пол — он нужен только для корректных русских формулировок в тексте разбора.",
+        0.5,
+        reply_markup=gender_keyboard(),
+    )
+    return ASK_GENDER
+
+
+async def got_gender(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+    value = query.data[len(GENDER_CB_PREFIX):]
+    if value not in {"male", "female"}:
+        return ASK_GENDER
+    context.user_data["gender"] = value
+    await query.edit_message_reply_markup(reply_markup=None)
+    return await ask_birth_date(context, query.message.chat_id)
 
 
 async def got_date(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -207,23 +242,23 @@ async def deliver_chart(update: Update, context: ContextTypes.DEFAULT_TYPE, chat
     )
     context.user_data["chart"] = chart
 
-    await send_bot(context, chat_id, "Готово. Начнём с большой тройки.", 0.6)
+    await send_bot(context, chat_id, "🌙 Карта готова. Сначала — большая тройка.", 0.6)
 
     await send_bot(
         context, chat_id,
-        f"Ваше Солнце в знаке {ac.SIGN_GENITIVE[chart['sun']['sign']]}.\n\n{ct.SUN_TEXTS[chart['sun']['sign']]}",
+        f"☀️ Солнце в знаке {ac.SIGN_GENITIVE[chart['sun']['sign']]}.\n\n{ct.SUN_TEXTS[chart['sun']['sign']]}",
         1.3,
     )
     await send_bot(
         context, chat_id,
-        f"Луна {ac.v_predlog(chart['moon']['sign'])} {ac.SIGN_PREPOSITIONAL[chart['moon']['sign']]}. {ct.MOON_TEXTS[chart['moon']['sign']]}",
+        f"🌙 Луна {ac.v_predlog(chart['moon']['sign'])} {ac.SIGN_PREPOSITIONAL[chart['moon']['sign']]}.\n\n{ct.MOON_TEXTS[chart['moon']['sign']]}",
         1.0,
     )
     if chart["has_time"]:
         note = " (город не указан, расчёт приблизительный, по Москве)" if chart["used_default_city"] else ""
         await send_bot(
             context, chat_id,
-            f"Восходящий знак: {chart['rising']['sign']}{note}. {ct.RISING_TEXTS[chart['rising']['sign']]}",
+            f"↗️ Асцендент: {chart['rising']['sign']}{note}.\n\n{ct.RISING_TEXTS[chart['rising']['sign']]}",
             1.0,
         )
     else:
@@ -234,7 +269,7 @@ async def deliver_chart(update: Update, context: ContextTypes.DEFAULT_TYPE, chat
             1.0,
         )
 
-    await send_bot(context, chat_id, "Это только три точки из восьми. Идём глубже.", 0.9)
+    await send_bot(context, chat_id, "🪐 Теперь — личные планеты и две опорные социальные планеты.", 0.9)
 
     await send_bot(
         context, chat_id,
@@ -254,11 +289,74 @@ async def deliver_chart(update: Update, context: ContextTypes.DEFAULT_TYPE, chat
         1.2,
     )
 
+    balance = ac.chart_balance(chart)
+    element_profiles = [ct.ELEMENT_PROFILES[key] for key in balance["dominant_elements"]]
+    modality_profiles = [ct.MODALITY_PROFILES[key] for key in balance["dominant_modalities"]]
+    element_names = " + ".join(item[0] for item in element_profiles)
+    element_text = " ".join(item[1] for item in element_profiles)
+    modality_names = " + ".join(item[0] for item in modality_profiles)
+    modality_text = " ".join(item[1] for item in modality_profiles)
+    element_label = "Ведущая стихия" if len(element_profiles) == 1 else "Баланс ведущих стихий"
+    modality_label = "Ведущий тип действия" if len(modality_profiles) == 1 else "Баланс типов действия"
+    await send_bot(
+        context, chat_id,
+        f"🧭 Второй слой — баланс карты.\n\n"
+        f"{element_label}: {element_names}. {element_text}\n\n"
+        f"{modality_label}: {modality_names}. {modality_text}",
+        1.3,
+    )
+
     await send_menu(context, chat_id)
     return ConversationHandler.END
 
 
 # ---------- сферы жизни ----------
+
+def _group_ingress_hits(raw_hits):
+    """Склеивает повторные входы одной планеты в один период и выбирает разные сюжеты."""
+    by_planet = {}
+    for hit in sorted(raw_hits, key=lambda h: h["day_offset"]):
+        groups = by_planet.setdefault(hit["planet_key"], [])
+        if groups and hit["day_offset"] - groups[-1][-1]["day_offset"] <= 150:
+            groups[-1].append(hit)
+        else:
+            groups.append([hit])
+
+    grouped = []
+    for planet_key, groups in by_planet.items():
+        for idx, group in enumerate(groups):
+            grouped.append({
+                "planet_key": planet_key,
+                "start_day": group[0]["day_offset"],
+                "start_label": group[0]["date_label"],
+                "end_label": group[-1]["date_label"],
+                "returns": len(group) > 1,
+                "retrograde": any(x.get("retrograde") for x in group),
+                "variant": idx % 4,
+            })
+    grouped.sort(key=lambda h: h["start_day"])
+
+    # Сначала берём разные планеты, затем — повторные сюжеты, если места остались.
+    selected, used = [], set()
+    for hit in grouped:
+        if hit["planet_key"] not in used:
+            selected.append(hit)
+            used.add(hit["planet_key"])
+        if len(selected) == 4:
+            return selected
+    for hit in grouped:
+        if hit not in selected:
+            selected.append(hit)
+        if len(selected) == 4:
+            break
+    return selected
+
+
+def _period_label(hit):
+    if hit["start_label"] == hit["end_label"]:
+        return hit["start_label"]
+    return f"{hit['start_label']} — {hit['end_label']}"
+
 
 async def sphere(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -271,12 +369,16 @@ async def sphere(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await context.bot.send_message(chat_id=chat_id, text="Сначала пройдите разбор заново: /start")
         return
 
-    await send_bot(context, chat_id, f"Смотрю, что карта говорит про {s['title'].lower()}…", 0.7)
+    await send_bot(context, chat_id, f"{SPHERE_EMOJI[sphere_key]} Разбираю сферу «{s['title']}» в двух слоях: базовый сценарий и ближайшие периоды.", 0.7)
 
     planet_sign = chart[s["planet_key"]]["sign"]
     if chart["has_time"] and chart["rising"]:
         house_sign = ac.sign_in_house(chart["rising"]["sign"], s["house_num"])
-        await send_bot(context, chat_id, f"{s['house_texts'][house_sign]}\n\nЧто с этим делать: {s['advice'][house_sign]}", 1.4)
+        await send_bot(
+            context, chat_id,
+            f"Главный сценарий\n\n{s['house_texts'][house_sign]}\n\nПрактический фокус: {s['advice'][house_sign]}",
+            1.4,
+        )
 
         cache_key = f"house_ingress_{s['house_num']}"
         ingress_hits = context.user_data.get(cache_key)
@@ -286,41 +388,37 @@ async def sphere(update: Update, context: ContextTypes.DEFAULT_TYPE):
             for planet_key in ["mercury", "venus", "mars", "jupiter", "saturn"]:
                 for t in ac.find_house_ingresses(planet_key, s["house_num"], chart["rising"]["sign"], now, 730):
                     raw_hits.append({
-                        "planet_key": planet_key, "day_offset": t,
+                        "planet_key": planet_key,
+                        "day_offset": t,
                         "date_label": ac.jd_to_date_label(now + t),
                         "retrograde": ac.is_retrograde(planet_key, now + t),
                     })
-            raw_hits.sort(key=lambda h: h["day_offset"])
-            seen_count = {}
-            for h in raw_hits:
-                idx = seen_count.get(h["planet_key"], 0)
-                h["variant"] = idx % 2
-                seen_count[h["planet_key"]] = idx + 1
-            ingress_hits = raw_hits
+            ingress_hits = _group_ingress_hits(raw_hits)
             context.user_data[cache_key] = ingress_hits
 
         if ingress_hits:
-            lines = ["🔭 Ближайшие даты, когда эта сфера особенно активна:"]
-            for h in ingress_hits[:5]:
-                bank = ct.PLANET_SPHERE_ACTION if h["variant"] == 0 else ct.PLANET_SPHERE_ACTION_V2
-                action = bank[h["planet_key"]][sphere_key]
-                if h["retrograde"]:
-                    lead = f"{ct.PLANET_LABEL[h['planet_key']]} сейчас здесь, но движется попятно"
-                else:
-                    lead = ct.PLANET_REASON[h["planet_key"]]
-                lines.append(f"\n📅 {h['date_label']}. {lead}: {action}. {ct.PLANET_WEIGHT[h['planet_key']]}")
-            await send_bot(context, chat_id, "\n".join(lines), 1.6)
+            await send_bot(context, chat_id, "🔭 Ближайшие окна. Я склеила повторные ретроградные входы, чтобы один и тот же сюжет не дублировался несколькими почти одинаковыми датами.", 0.7)
+            for h in ingress_hits:
+                variants = ct.SPHERE_EVENT_TEXTS[h["planet_key"]][sphere_key]
+                text = variants[h["variant"] % len(variants)]
+                return_note = " Тема может вернуться второй волной — это часть одного периода, а не отдельное новое событие." if h["returns"] else ""
+                await send_bot(
+                    context, chat_id,
+                    f"📅 {_period_label(h)} · {ct.PLANET_LABEL[h['planet_key']]}\n"
+                    f"Фокус: {ct.PLANET_REASON[h['planet_key']]}.\n\n{text}{return_note}\n\n"
+                    f"{ct.PLANET_WEIGHT[h['planet_key']]}",
+                    1.05,
+                )
         else:
             await send_bot(
                 context, chat_id,
-                f"По сфере «{s['title']}» на ближайшие два года дат не находится, это редкое, но возможное совпадение.",
+                f"В ближайшие два года крупных входов планет в дом сферы «{s['title']}» не нашлось. Это не значит, что тема стоит на месте: просто этот конкретный индикатор сейчас не даёт отдельного окна.",
                 0.9,
             )
     else:
         await send_bot(
             context, chat_id,
-            f"Без точного времени рождения не вижу, в каком доме у вас сейчас {s['title'].lower()}, "
-            f"но кое-что скажу и так. {s['planet_texts'][planet_sign]}",
+            f"Без точного времени рождения дома карты ненадёжны, поэтому я не буду придумывать даты по этой сфере. Но планетарный слой остаётся: {s['planet_texts'][planet_sign]}",
             1.2,
         )
     await send_menu(context, chat_id)
@@ -340,48 +438,45 @@ async def unlived(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not (chart["has_time"] and chart["rising"]):
         await send_bot(
             context, chat_id,
-            "Этот сканер смотрит на дом Северного узла в вашей карте, а для домов нужно точное время рождения. "
-            "Начните разбор заново и укажите время, тогда я смогу его включить.",
+            "Для этого раздела нужен дом Северного узла, а дом без точного времени рождения ненадёжен. Если знаете время, начните разбор заново и укажите его.",
             1.0,
         )
         return
 
-    await send_bot(context, chat_id, "Смотрю на узлы и Сатурн в вашей карте…", 1.0)
+    await send_bot(
+        context, chat_id,
+        "✨ «Непрожитые жизни» — это не буквальная параллельная судьба. Я использую ось Южного и Северного узлов как способ описать привычный ресурс и направление, которое человек часто откладывает.",
+        1.0,
+    )
 
     house_num = ac.house_of_sign(chart["north_node"]["sign"], chart["rising"]["sign"])
-    saturn_sentence = f"Ваш Сатурн в {ac.SIGN_PREPOSITIONAL[chart['saturn']['sign']]} показывает, что вы способны {ct.SATURN_MAGNITUDE[chart['saturn']['sign']]}."
+    south_sign = chart["south_node"]["sign"]
+    north_sign = chart["north_node"]["sign"]
+    saturn_sentence = f"Сатурн в {ac.SIGN_PREPOSITIONAL[chart['saturn']['sign']]} добавляет масштаб: вы способны {ct.SATURN_MAGNITUDE[chart['saturn']['sign']]}."
     potential = ct.HOUSE_POTENTIAL[str(house_num)].format(saturn=saturn_sentence)
-    vision = ct.NODE_VISIONS[chart["north_node"]["sign"]]
-    validation = ct.VALIDATION[str(house_num)]
-    advice1 = ct.HOUSE_RETURN_ADVICE[str(house_num)]
-    advice2 = ct.HOUSE_RETURN_ADVICE_2[str(house_num)]
 
     await send_bot(
         context, chat_id,
-        "У каждого в карте есть путь, которым вы прошли, и путь, который звал, но остался в стороне. "
-        f"Вот что я вижу в вашем случае.\n\n{potential}",
-        2.2,
+        f"1/4 · Что уже развито\n\nЮжный узел в {ac.SIGN_PREPOSITIONAL[south_sign]}: вы уже умеете {ct.SOUTH_NODE_RESOURCES[south_sign]}. Это не нужно ломать — это ваш готовый инструмент.",
+        1.5,
     )
-    await send_bot(context, chat_id, f"А если бы вы тогда выбрали иначе: {vision}\n\n{validation}", 2.0)
-    await send_bot(context, chat_id, f"✅ Что можно сделать уже сейчас:\n1. {advice1}\n2. {advice2}", 1.6)
+    await send_bot(
+        context, chat_id,
+        f"2/4 · Куда растёт карта\n\nСеверный узел в {ac.SIGN_PREPOSITIONAL[north_sign]}, дом {house_num}. {ct.NODE_VISIONS[north_sign]}\n\n{potential}",
+        2.0,
+    )
+    await send_bot(
+        context, chat_id,
+        f"3/4 · Где обычно возникает сопротивление\n\n{ct.HOUSE_SHADOW[str(house_num)]}\n\nВопрос для проверки на реальной жизни: {ct.HOUSE_REFLECTION[str(house_num)]}\n\n{ct.VALIDATION[str(house_num)]}",
+        1.8,
+    )
+    await send_bot(
+        context, chat_id,
+        f"4/4 · Как вернуть эту линию в жизнь\n\nБольшой шаг: {ct.HOUSE_RETURN_ADVICE[str(house_num)]}\n\nМалый эксперимент: {ct.HOUSE_RETURN_ADVICE_2[str(house_num)]}",
+        1.8,
+    )
 
     now = ac.to_jd(date.today().year, date.today().month, date.today().day, 0, 0)
-    power_hits = []
-    for planet_key in ["mercury", "venus", "mars", "jupiter", "saturn"]:
-        for t in ac.find_house_ingresses(planet_key, house_num, chart["rising"]["sign"], now, 730):
-            power_hits.append({"planet_key": planet_key, "day_offset": t, "date_label": ac.jd_to_date_label(now + t)})
-    power_hits.sort(key=lambda h: h["day_offset"])
-
-    if power_hits:
-        h = power_hits[0]
-        tie = ct.HOUSE_INFO[house_num]["tie"]
-        await send_bot(
-            context, chat_id,
-            f"🌟 И ещё одно: 📅 {h['date_label']}. {ct.PLANET_REASON[h['planet_key']]}, прямо там, где живёт этот нереализованный путь. "
-            f"Особенно легко в этот день повлиять на {tie}. {ct.PLANET_WEIGHT[h['planet_key']]}",
-            1.4,
-        )
-
     birth_jd = chart["birth_jd"]
     lifespan_days = int(now - birth_jd)
     if lifespan_days > 0:
@@ -398,7 +493,7 @@ async def unlived(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await send_bot(
                 context, chat_id,
                 template.format(age=age, year_word=ac.year_word(age), month_year=month_year, tie=ct.HOUSE_INFO[house_num]["tie"]),
-                2.4,
+                2.0,
             )
 
         future_hits = ac.find_transit_hits(chart["north_node_lon"], "saturn", now, 6570)
@@ -407,18 +502,19 @@ async def unlived(update: Update, context: ContextTypes.DEFAULT_TYPE):
             nxt = future_major[0]
             event_jd = now + nxt["day_offset"]
             ey, em, _ = ac.jd_to_ymd(event_jd)
+            by, bm, bd = ac.jd_to_ymd(birth_jd)
             age = ey - by - (1 if (em, 1) < (bm, bd) else 0)
             month_year = f"{ct.MONTHS_PREP[em - 1]} {ey}"
             template = ct.NODE_SATURN_FUTURE[nxt["aspect_key"]]
             await send_bot(
                 context, chat_id,
                 template.format(age=age, year_word=ac.year_word(age), month_year=month_year, tie=ct.HOUSE_INFO[house_num]["tie"]),
-                2.2,
+                1.8,
             )
 
     for planet_key in ["venus", "mars", "mercury", "jupiter", "saturn"]:
         if ac.is_retrograde(planet_key, birth_jd):
-            await send_bot(context, chat_id, "✨ " + ct.RETRO_NARRATIVES[planet_key], 2.2)
+            await send_bot(context, chat_id, "↩️ Дополнительный слой: " + ct.RETRO_NARRATIVES[planet_key], 1.8)
             break
 
     await send_menu(context, chat_id)
@@ -481,11 +577,8 @@ async def restart_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     await query.answer()
     context.user_data.clear()
     chat_id = query.message.chat_id
-    await send_bot(context, chat_id,
-                    "Здравствуйте! Я «Небосвод», бот для индивидуального разбора натальной карты.", 0.6)
-    await send_bot(context, chat_id,
-                    "Начнём с даты. Пришлите её в формате ДД.ММ.ГГГГ, например 20.08.1993.", 0.8)
-    return ASK_DATE
+    await send_bot(context, chat_id, "Начинаем заново. Сначала уточню пол для корректных формулировок.", 0.5, reply_markup=gender_keyboard())
+    return ASK_GENDER
 
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -547,6 +640,7 @@ def main():
     conv = ConversationHandler(
         entry_points=[CommandHandler("start", start), CallbackQueryHandler(restart_button, pattern=f"^{RESTART_CB}$")],
         states={
+            ASK_GENDER: [CallbackQueryHandler(got_gender, pattern=f"^{GENDER_CB_PREFIX}(male|female)$")],
             ASK_DATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, got_date)],
             ASK_TIME: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, got_time),

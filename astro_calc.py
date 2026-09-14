@@ -333,3 +333,49 @@ def is_retrograde(planet_key, jd):
     lon_next = planet_longitude(planet_key, jd + 1)
     diff = norm360(lon_next - lon_now)
     return diff > 180
+
+# ---------- баланс стихий и модальностей ----------
+ELEMENT_BY_SIGN = {
+    "Овен": "fire", "Лев": "fire", "Стрелец": "fire",
+    "Телец": "earth", "Дева": "earth", "Козерог": "earth",
+    "Близнецы": "air", "Весы": "air", "Водолей": "air",
+    "Рак": "water", "Скорпион": "water", "Рыбы": "water",
+}
+
+MODALITY_BY_SIGN = {
+    "Овен": "cardinal", "Рак": "cardinal", "Весы": "cardinal", "Козерог": "cardinal",
+    "Телец": "fixed", "Лев": "fixed", "Скорпион": "fixed", "Водолей": "fixed",
+    "Близнецы": "mutable", "Дева": "mutable", "Стрелец": "mutable", "Рыбы": "mutable",
+}
+
+
+def chart_balance(chart):
+    """Считает дополнительный профиль карты по стихиям и модальностям.
+
+    Используются Солнце, Луна, Меркурий, Венера, Марс, Юпитер и Сатурн;
+    асцендент добавляется, если известно точное время рождения.
+    """
+    points = ["sun", "moon", "mercury", "venus", "mars", "jupiter", "saturn"]
+    signs = [chart[key]["sign"] for key in points if chart.get(key)]
+    if chart.get("rising"):
+        signs.append(chart["rising"]["sign"])
+
+    elements = {"fire": 0, "earth": 0, "air": 0, "water": 0}
+    modalities = {"cardinal": 0, "fixed": 0, "mutable": 0}
+    for sign in signs:
+        elements[ELEMENT_BY_SIGN[sign]] += 1
+        modalities[MODALITY_BY_SIGN[sign]] += 1
+
+    max_element = max(elements.values())
+    max_modality = max(modalities.values())
+    dominant_elements = [key for key, value in elements.items() if value == max_element]
+    dominant_modalities = [key for key, value in modalities.items() if value == max_modality]
+    return {
+        "elements": elements,
+        "modalities": modalities,
+        "dominant_element": dominant_elements[0],
+        "dominant_modality": dominant_modalities[0],
+        "dominant_elements": dominant_elements,
+        "dominant_modalities": dominant_modalities,
+        "point_count": len(signs),
+    }
