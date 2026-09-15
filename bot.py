@@ -304,35 +304,6 @@ async def deliver_synastry(update: Update, context: ContextTypes.DEFAULT_TYPE, c
         context.user_data.get("partner_city", ""),
     )
 
-    lines = []
-    summary_entries = []  # (label, aspect, content_key) в порядке приоритета, для итоговой сводки
-
-    for key_a, key_b, label in ct.SYNASTRY_PAIRS:
-        aspect = ac.natal_aspect(ac.point_lon(chart[key_a]), ac.point_lon(partner_chart[key_b]))
-        text = ct.SYNASTRY_TEXTS[f"{key_a}_{key_b}"][aspect]
-        lines.append(f"{label}\n{text}")
-        summary_entries.append((label, aspect, f"{key_a}_{key_b}"))
-
-    for key_a, key_b, label, content_key in ct.SYNASTRY_CROSS_PAIRS:
-        aspect1 = ac.natal_aspect(ac.point_lon(chart[key_a]), ac.point_lon(partner_chart[key_b]))
-        aspect2 = ac.natal_aspect(ac.point_lon(chart[key_b]), ac.point_lon(partner_chart[key_a]))
-        text1 = ct.SYNASTRY_TEXTS[content_key][aspect1]
-        if aspect2 == aspect1:
-            lines.append(f"{label}\n{text1}")
-        else:
-            text2 = ct.SYNASTRY_TEXTS[content_key][aspect2]
-            lines.append(f"{label}\n{text1}\n\nИ в обратную сторону: {text2}")
-        summary_entries.append((label, aspect1, content_key))
-
-    if chart["has_time"] and chart["rising"] and partner_chart["has_time"] and partner_chart["rising"]:
-        asc_aspect = ac.natal_aspect(ac.point_lon(chart["rising"]), ac.point_lon(partner_chart["rising"]))
-        lines.append(f"{ct.SYNASTRY_ASC_LABEL}\n{ct.SYNASTRY_TEXTS['asc_asc'][asc_aspect]}")
-        summary_entries.append((ct.SYNASTRY_ASC_LABEL, asc_aspect, "asc_asc"))
-
-    for chunk_start in range(0, len(lines), 2):
-        chunk = lines[chunk_start:chunk_start + 2]
-        await send_bot(context, chat_id, "\n\n".join(chunk), 1.8)
-
     moon_a_sid = ac.sidereal_lon(ac.point_lon(chart["moon"]), chart["birth_jd"])
     moon_b_sid = ac.sidereal_lon(ac.point_lon(partner_chart["moon"]), partner_chart["birth_jd"])
     nak_a = ac.nakshatra_of(moon_a_sid)["name"]
@@ -345,10 +316,46 @@ async def deliver_synastry(update: Update, context: ContextTypes.DEFAULT_TYPE, c
 
     await send_bot(
         context, chat_id,
-        f"🕉️ И отдельно, по ведической традиции: ваша накшатра {nak_a}, у партнёра {nak_b}.\n\n"
+        f"🕉️ Начнём с ведического: ваша накшатра {nak_a}, у партнёра {nak_b}.\n\n"
         f"{ct.GANA_TEXTS[gana_key]}\n\n{ct.NADI_TEXTS[nadi_key]}",
         2.0,
     )
+
+    lines = []
+    summary_entries = []  # (label, aspect, content_key) в порядке приоритета, для итоговой сводки
+
+    def headline(aspect):
+        percent, tag = ct.ASPECT_HEADLINE[aspect]
+        return f"{tag}: {percent}"
+
+    for key_a, key_b, label in ct.SYNASTRY_PAIRS:
+        aspect = ac.natal_aspect(ac.point_lon(chart[key_a]), ac.point_lon(partner_chart[key_b]))
+        text = ct.SYNASTRY_TEXTS[f"{key_a}_{key_b}"][aspect]
+        lines.append(f"{label}. {headline(aspect)}\n{text}")
+        summary_entries.append((label, aspect, f"{key_a}_{key_b}"))
+
+    for key_a, key_b, label, content_key in ct.SYNASTRY_CROSS_PAIRS:
+        aspect1 = ac.natal_aspect(ac.point_lon(chart[key_a]), ac.point_lon(partner_chart[key_b]))
+        aspect2 = ac.natal_aspect(ac.point_lon(chart[key_b]), ac.point_lon(partner_chart[key_a]))
+        text1 = ct.SYNASTRY_TEXTS[content_key][aspect1]
+        if aspect2 == aspect1:
+            lines.append(f"{label}. {headline(aspect1)}\n{text1}")
+        else:
+            text2 = ct.SYNASTRY_TEXTS[content_key][aspect2]
+            lines.append(
+                f"{label}. {headline(aspect1)}\n{text1}\n\n"
+                f"И в обратную сторону, {headline(aspect2)}: {text2}"
+            )
+        summary_entries.append((label, aspect1, content_key))
+
+    if chart["has_time"] and chart["rising"] and partner_chart["has_time"] and partner_chart["rising"]:
+        asc_aspect = ac.natal_aspect(ac.point_lon(chart["rising"]), ac.point_lon(partner_chart["rising"]))
+        lines.append(f"{ct.SYNASTRY_ASC_LABEL}. {headline(asc_aspect)}\n{ct.SYNASTRY_TEXTS['asc_asc'][asc_aspect]}")
+        summary_entries.append((ct.SYNASTRY_ASC_LABEL, asc_aspect, "asc_asc"))
+
+    for chunk_start in range(0, len(lines), 2):
+        chunk = lines[chunk_start:chunk_start + 2]
+        await send_bot(context, chat_id, "\n\n".join(chunk), 1.8)
 
     strengths = [(label, key) for label, aspect, key in summary_entries if aspect in ("conjunction", "trine")]
     growth = [(label, key) for label, aspect, key in summary_entries if aspect in ("square", "opposition")]
