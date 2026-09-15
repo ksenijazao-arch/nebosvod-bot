@@ -806,6 +806,32 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"Разослано: {sent}, не доставлено: {failed}, всего в базе: {len(users)}.")
 
 
+async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    text = update.message.text or ""
+    parts = text.split(maxsplit=1)
+    if len(parts) < 2 or parts[1] != BROADCAST_PASSWORD or not BROADCAST_PASSWORD:
+        await update.message.reply_text("Формат: /stats пароль")
+        return
+    if not DATABASE_URL:
+        await update.message.reply_text("База данных не подключена.")
+        return
+    try:
+        with db_connect() as conn, conn.cursor() as cur:
+            cur.execute("SELECT COUNT(*) FROM users")
+            total = cur.fetchone()[0]
+            cur.execute("SELECT COUNT(*) FROM users WHERE first_seen > now() - interval '7 days'")
+            week = cur.fetchone()[0]
+            cur.execute("SELECT COUNT(*) FROM users WHERE first_seen > now() - interval '1 day'")
+            day = cur.fetchone()[0]
+    except Exception as e:
+        await update.message.reply_text(f"Не удалось посчитать: {e}")
+        return
+    await update.message.reply_text(
+        f"Всего заходило в бота: {total}.\nЗа последние 7 дней: {week}.\nЗа последние сутки: {day}."
+    )
+
+
 def main():
     token = os.environ.get("BOT_TOKEN")
     if not token:
@@ -857,6 +883,7 @@ def main():
     application.add_handler(CallbackQueryHandler(unlived, pattern=f"^{UNLIVED_CB}$"))
     application.add_handler(CallbackQueryHandler(numerology, pattern=f"^{NUMEROLOGY_CB}$"))
     application.add_handler(CommandHandler("broadcast", broadcast))
+    application.add_handler(CommandHandler("stats", stats))
 
     log.info("Небосвод запущен, жду сообщений…")
     application.run_polling(allowed_updates=Update.ALL_TYPES)
