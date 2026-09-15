@@ -447,19 +447,19 @@ async def deliver_chart(update: Update, context: ContextTypes.DEFAULT_TYPE, chat
 
     await send_bot(
         context, chat_id,
-        f"Ваше Солнце в знаке {ac.SIGN_GENITIVE[chart['sun']['sign']]}.\n\n{ct.SUN_TEXTS[chart['sun']['sign']]}",
+        f"☀️ Ваше Солнце в знаке {ac.SIGN_GENITIVE[chart['sun']['sign']]}.\n\n{ct.SUN_TEXTS[chart['sun']['sign']]}",
         1.3,
     )
     await send_bot(
         context, chat_id,
-        f"Луна {ac.v_predlog(chart['moon']['sign'])} {ac.SIGN_PREPOSITIONAL[chart['moon']['sign']]}. {ct.MOON_TEXTS[chart['moon']['sign']]}",
+        f"🌙 Луна {ac.v_predlog(chart['moon']['sign'])} {ac.SIGN_PREPOSITIONAL[chart['moon']['sign']]}. {ct.MOON_TEXTS[chart['moon']['sign']]}",
         1.0,
     )
     if chart["has_time"]:
         note = " (город не указан, расчёт приблизительный, по Москве)" if chart["used_default_city"] else ""
         await send_bot(
             context, chat_id,
-            f"Восходящий знак: {chart['rising']['sign']}{note}. {ct.RISING_TEXTS[chart['rising']['sign']]}",
+            f"⬆️ Восходящий знак: {chart['rising']['sign']}{note}. {ct.RISING_TEXTS[chart['rising']['sign']]}",
             1.0,
         )
     else:
@@ -474,19 +474,19 @@ async def deliver_chart(update: Update, context: ContextTypes.DEFAULT_TYPE, chat
 
     await send_bot(
         context, chat_id,
-        f"Меркурий {ac.v_predlog(chart['mercury']['sign'])} {ac.SIGN_PREPOSITIONAL[chart['mercury']['sign']]}. {ct.MERCURY_TEXTS[chart['mercury']['sign']]}\n\n"
-        f"Венера {ac.v_predlog(chart['venus']['sign'])} {ac.SIGN_PREPOSITIONAL[chart['venus']['sign']]}. {ct.VENUS_TEXTS[chart['venus']['sign']]}",
+        f"💬 Меркурий {ac.v_predlog(chart['mercury']['sign'])} {ac.SIGN_PREPOSITIONAL[chart['mercury']['sign']]}. {ct.MERCURY_TEXTS[chart['mercury']['sign']]}\n\n"
+        f"🌸 Венера {ac.v_predlog(chart['venus']['sign'])} {ac.SIGN_PREPOSITIONAL[chart['venus']['sign']]}. {ct.VENUS_TEXTS[chart['venus']['sign']]}",
         1.4,
     )
     await send_bot(
         context, chat_id,
-        f"Марс {ac.v_predlog(chart['mars']['sign'])} {ac.SIGN_PREPOSITIONAL[chart['mars']['sign']]}. {ct.MARS_TEXTS[chart['mars']['sign']]}\n\n"
-        f"Юпитер {ac.v_predlog(chart['jupiter']['sign'])} {ac.SIGN_PREPOSITIONAL[chart['jupiter']['sign']]}. {ct.JUPITER_TEXTS[chart['jupiter']['sign']]}",
+        f"🔥 Марс {ac.v_predlog(chart['mars']['sign'])} {ac.SIGN_PREPOSITIONAL[chart['mars']['sign']]}. {ct.MARS_TEXTS[chart['mars']['sign']]}\n\n"
+        f"🍀 Юпитер {ac.v_predlog(chart['jupiter']['sign'])} {ac.SIGN_PREPOSITIONAL[chart['jupiter']['sign']]}. {ct.JUPITER_TEXTS[chart['jupiter']['sign']]}",
         1.4,
     )
     await send_bot(
         context, chat_id,
-        f"Сатурн {ac.v_predlog(chart['saturn']['sign'])} {ac.SIGN_PREPOSITIONAL[chart['saturn']['sign']]}. {ct.SATURN_TEXTS[chart['saturn']['sign']]}",
+        f"⏳ Сатурн {ac.v_predlog(chart['saturn']['sign'])} {ac.SIGN_PREPOSITIONAL[chart['saturn']['sign']]}. {ct.SATURN_TEXTS[chart['saturn']['sign']]}",
         1.2,
     )
 
@@ -881,7 +881,7 @@ def main():
                 CallbackQueryHandler(skip_partner_city, pattern=f"^{SKIP_PARTNER_CITY_CB}$"),
             ],
         },
-        fallbacks=[CommandHandler("cancel", cancel), CommandHandler("start", start)],
+        fallbacks=[CommandHandler("cancel", cancel)],
     )
     application.add_handler(compat_conv)
 
