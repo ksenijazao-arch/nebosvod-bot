@@ -216,6 +216,10 @@ async def start_compat(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     if not context.user_data.get("chart"):
         await context.bot.send_message(chat_id=chat_id, text="Сначала пройдите разбор заново: /start")
         return ConversationHandler.END
+    avatar_path = os.path.join(os.path.dirname(__file__), "avatar.png")
+    if os.path.exists(avatar_path):
+        with open(avatar_path, "rb") as f:
+            await context.bot.send_photo(chat_id=chat_id, photo=f, caption="💞 Совместимость двух карт")
     await send_bot(
         context, chat_id,
         "Хорошо, сравним карты. Дата рождения партнёра, в формате ДД.ММ.ГГГГ, например 20.08.1993.",
@@ -301,13 +305,13 @@ async def deliver_synastry(update: Update, context: ContextTypes.DEFAULT_TYPE, c
     )
 
     lines = []
-    summary_entries = []  # (label, aspect) в порядке приоритета, для итоговой сводки
+    summary_entries = []  # (label, aspect, content_key) в порядке приоритета, для итоговой сводки
 
     for key_a, key_b, label in ct.SYNASTRY_PAIRS:
         aspect = ac.natal_aspect(ac.point_lon(chart[key_a]), ac.point_lon(partner_chart[key_b]))
         text = ct.SYNASTRY_TEXTS[f"{key_a}_{key_b}"][aspect]
         lines.append(f"{label}\n{text}")
-        summary_entries.append((label, aspect))
+        summary_entries.append((label, aspect, f"{key_a}_{key_b}"))
 
     for key_a, key_b, label, content_key in ct.SYNASTRY_CROSS_PAIRS:
         aspect1 = ac.natal_aspect(ac.point_lon(chart[key_a]), ac.point_lon(partner_chart[key_b]))
@@ -318,26 +322,48 @@ async def deliver_synastry(update: Update, context: ContextTypes.DEFAULT_TYPE, c
         else:
             text2 = ct.SYNASTRY_TEXTS[content_key][aspect2]
             lines.append(f"{label}\n{text1}\n\nИ в обратную сторону: {text2}")
-        summary_entries.append((label, aspect1))
+        summary_entries.append((label, aspect1, content_key))
 
     if chart["has_time"] and chart["rising"] and partner_chart["has_time"] and partner_chart["rising"]:
         asc_aspect = ac.natal_aspect(ac.point_lon(chart["rising"]), ac.point_lon(partner_chart["rising"]))
         lines.append(f"{ct.SYNASTRY_ASC_LABEL}\n{ct.SYNASTRY_TEXTS['asc_asc'][asc_aspect]}")
-        summary_entries.append((ct.SYNASTRY_ASC_LABEL, asc_aspect))
+        summary_entries.append((ct.SYNASTRY_ASC_LABEL, asc_aspect, "asc_asc"))
 
     for chunk_start in range(0, len(lines), 2):
         chunk = lines[chunk_start:chunk_start + 2]
         await send_bot(context, chat_id, "\n\n".join(chunk), 1.8)
 
-    strengths = [label for label, aspect in summary_entries if aspect in ("conjunction", "trine")][:3]
-    growth = [label for label, aspect in summary_entries if aspect in ("square", "opposition")][:1]
-    summary_parts = []
+    moon_a_sid = ac.sidereal_lon(ac.point_lon(chart["moon"]), chart["birth_jd"])
+    moon_b_sid = ac.sidereal_lon(ac.point_lon(partner_chart["moon"]), partner_chart["birth_jd"])
+    nak_a = ac.nakshatra_of(moon_a_sid)["name"]
+    nak_b = ac.nakshatra_of(moon_b_sid)["name"]
+    gana_a, gana_b = ac.GANA_OF_NAKSHATRA[nak_a], ac.GANA_OF_NAKSHATRA[nak_b]
+    nadi_a, nadi_b = ac.NADI_OF_NAKSHATRA[nak_a], ac.NADI_OF_NAKSHATRA[nak_b]
+    gana_key = "_".join(sorted([gana_a, gana_b])) if gana_a != gana_b else f"{gana_a}_{gana_a}"
+    gana_key = gana_key if gana_key in ct.GANA_TEXTS else "_".join(sorted([gana_a, gana_b], reverse=True))
+    nadi_key = "same" if nadi_a == nadi_b else "different"
+
+    await send_bot(
+        context, chat_id,
+        f"🕉️ И отдельно, по ведической традиции: ваша накшатра {nak_a}, у партнёра {nak_b}.\n\n"
+        f"{ct.GANA_TEXTS[gana_key]}\n\n{ct.NADI_TEXTS[nadi_key]}",
+        2.0,
+    )
+
+    strengths = [(label, key) for label, aspect, key in summary_entries if aspect in ("conjunction", "trine")]
+    growth = [(label, key) for label, aspect, key in summary_entries if aspect in ("square", "opposition")]
+    harmonious_count = len(strengths)
+    total_count = len(summary_entries)
+
+    summary_parts = [f"📊 По цифрам: {harmonious_count} {ac.axis_word(harmonious_count)} из {total_count} гармоничные."]
     if strengths:
-        summary_parts.append("🌟 Сильные стороны этой пары: " + ", ".join(strengths) + ".")
+        summary_parts.append("🌟 Сильные стороны этой пары: " + ", ".join(l for l, k in strengths[:3]) + ".")
     if growth:
-        summary_parts.append(f"🎯 Главная точка роста: {growth[0]}.")
-    if summary_parts:
-        await send_bot(context, chat_id, "\n\n".join(summary_parts), 1.4)
+        summary_parts.append(f"🎯 Главная точка роста: {growth[0][0]}.")
+    await send_bot(context, chat_id, "\n\n".join(summary_parts), 1.6)
+
+    advice_key = growth[0][1] if growth else "fallback"
+    await send_bot(context, chat_id, f"📝 Совет на эту неделю: {ct.SYNASTRY_WEEKLY_ADVICE[advice_key]}", 1.3)
 
     await send_menu(context, chat_id)
     return ConversationHandler.END
@@ -392,7 +418,12 @@ def main_menu_keyboard():
 
 
 async def send_menu(context, chat_id):
-    await context.bot.send_message(chat_id=chat_id, text="Что дальше?", reply_markup=main_menu_keyboard())
+    avatar_path = os.path.join(os.path.dirname(__file__), "avatar.png")
+    if os.path.exists(avatar_path):
+        with open(avatar_path, "rb") as f:
+            await context.bot.send_photo(chat_id=chat_id, photo=f, caption="Что дальше?", reply_markup=main_menu_keyboard())
+    else:
+        await context.bot.send_message(chat_id=chat_id, text="Что дальше?", reply_markup=main_menu_keyboard())
 
 
 async def deliver_chart(update: Update, context: ContextTypes.DEFAULT_TYPE, chat_id: int) -> int:

@@ -99,11 +99,19 @@ def life_path_number(day, month, year):
     """Число жизненного пути: сумма всех цифр даты рождения, сворачивается
     до одной цифры, кроме мастер-чисел 11/22/33, которые не сворачиваются
     дальше на любом шаге, если встретились."""
+    return life_path_steps(day, month, year)[-1]
+
+
+def life_path_steps(day, month, year):
+    """Та же логика, но возвращает список всех шагов свёртки, включая
+    исходную сумму цифр и финальное число, для наглядного показа расчёта."""
     digits = [int(c) for c in f"{day:02d}{month:02d}{year:04d}"]
     total = sum(digits)
+    steps = [total]
     while total not in (11, 22, 33) and total > 9:
         total = sum(int(c) for c in str(total))
-    return total
+        steps.append(total)
+    return steps
 
 
 NAKSHATRAS = [
@@ -113,6 +121,17 @@ NAKSHATRAS = [
     "Уттара Ашадха", "Шравана", "Дхаништха", "Шатабхиша", "Пурва Бхадрапада",
     "Уттара Бхадрапада", "Ревати",
 ]
+
+# традиционная классификация накшатр по гане (темперамент) и нади (тип энергии),
+# по 9 накшатр на каждую из 3 категорий в обеих системах
+_GANA_CYCLE = ["deva","manushya","rakshasa","manushya","deva","manushya","deva","deva","rakshasa",
+               "rakshasa","manushya","manushya","deva","rakshasa","deva","rakshasa","deva","rakshasa",
+               "rakshasa","manushya","manushya","deva","rakshasa","rakshasa","manushya","manushya","deva"]
+_NADI_CYCLE = ["adi","madhya","antya","antya","madhya","adi","adi","madhya","antya",
+               "antya","madhya","adi","adi","madhya","antya","antya","madhya","adi",
+               "adi","madhya","antya","antya","madhya","adi","adi","madhya","antya"]
+GANA_OF_NAKSHATRA = dict(zip(NAKSHATRAS, _GANA_CYCLE))
+NADI_OF_NAKSHATRA = dict(zip(NAKSHATRAS, _NADI_CYCLE))
 
 
 def lahiri_ayanamsa(jd):
@@ -183,6 +202,18 @@ def chart_balance(chart):
         "dominant_elements": dominant_elements,
         "dominant_modalities": dominant_modalities,
     }
+
+
+def axis_word(n):
+    n_mod = abs(n) % 100
+    n1 = n_mod % 10
+    if 11 <= n_mod <= 14:
+        return "осей"
+    if n1 == 1:
+        return "ось"
+    if 2 <= n1 <= 4:
+        return "оси"
+    return "осей"
 
 
 def year_word(n):
