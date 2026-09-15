@@ -118,7 +118,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
                     "Здравствуйте! Я «Небосвод», бот для индивидуального разбора натальной карты.", 0.6)
     await send_bot(
         context, chat_id,
-        "Сначала один короткий вопрос, чтобы текст разбора звучал по-русски правильно, без него никак.",
+        "Сначала один короткий, но важный вопрос.",
         0.6, reply_markup=gender_keyboard(),
     )
     return ASK_GENDER
@@ -301,10 +301,13 @@ async def deliver_synastry(update: Update, context: ContextTypes.DEFAULT_TYPE, c
     )
 
     lines = []
+    summary_entries = []  # (label, aspect) в порядке приоритета, для итоговой сводки
+
     for key_a, key_b, label in ct.SYNASTRY_PAIRS:
         aspect = ac.natal_aspect(ac.point_lon(chart[key_a]), ac.point_lon(partner_chart[key_b]))
         text = ct.SYNASTRY_TEXTS[f"{key_a}_{key_b}"][aspect]
         lines.append(f"{label}\n{text}")
+        summary_entries.append((label, aspect))
 
     for key_a, key_b, label, content_key in ct.SYNASTRY_CROSS_PAIRS:
         aspect1 = ac.natal_aspect(ac.point_lon(chart[key_a]), ac.point_lon(partner_chart[key_b]))
@@ -315,10 +318,26 @@ async def deliver_synastry(update: Update, context: ContextTypes.DEFAULT_TYPE, c
         else:
             text2 = ct.SYNASTRY_TEXTS[content_key][aspect2]
             lines.append(f"{label}\n{text1}\n\nИ в обратную сторону: {text2}")
+        summary_entries.append((label, aspect1))
+
+    if chart["has_time"] and chart["rising"] and partner_chart["has_time"] and partner_chart["rising"]:
+        asc_aspect = ac.natal_aspect(ac.point_lon(chart["rising"]), ac.point_lon(partner_chart["rising"]))
+        lines.append(f"{ct.SYNASTRY_ASC_LABEL}\n{ct.SYNASTRY_TEXTS['asc_asc'][asc_aspect]}")
+        summary_entries.append((ct.SYNASTRY_ASC_LABEL, asc_aspect))
 
     for chunk_start in range(0, len(lines), 2):
         chunk = lines[chunk_start:chunk_start + 2]
         await send_bot(context, chat_id, "\n\n".join(chunk), 1.8)
+
+    strengths = [label for label, aspect in summary_entries if aspect in ("conjunction", "trine")][:3]
+    growth = [label for label, aspect in summary_entries if aspect in ("square", "opposition")][:1]
+    summary_parts = []
+    if strengths:
+        summary_parts.append("🌟 Сильные стороны этой пары: " + ", ".join(strengths) + ".")
+    if growth:
+        summary_parts.append(f"🎯 Главная точка роста: {growth[0]}.")
+    if summary_parts:
+        await send_bot(context, chat_id, "\n\n".join(summary_parts), 1.4)
 
     await send_menu(context, chat_id)
     return ConversationHandler.END
@@ -333,8 +352,23 @@ async def numerology(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await context.bot.send_message(chat_id=chat_id, text="Сначала пройдите разбор заново: /start")
         return
     year, month, day = (int(x) for x in date_str.split("-"))
-    number = ac.life_path_number(day, month, year)
+    steps = ac.life_path_steps(day, month, year)
+    number = steps[-1]
+
+    digits = f"{day:02d}{month:02d}{year:04d}"
+    digit_sum = " + ".join(digits)
+    chain = " → ".join(str(s) for s in steps)
+    date_label = f"{day:02d}.{month:02d}.{year:04d}"
+
     await send_bot(context, chat_id, "Считаю число жизненного пути по дате рождения…", 0.9)
+    await send_bot(
+        context, chat_id,
+        "В нумерологии число жизненного пути получают одним и тем же способом уже больше века: "
+        "складывают все цифры полной даты рождения и сворачивают сумму до одной цифры, "
+        "кроме чисел 11, 22 и 33, их принято оставлять как есть, если они выпали по пути.\n\n"
+        f"Ваша дата {date_label}: {digit_sum} = {chain}.",
+        1.8,
+    )
     await send_bot(context, chat_id, ct.LIFE_PATH_TEXTS[str(number)], 1.5)
     await send_menu(context, chat_id)
 
@@ -346,8 +380,9 @@ SPHERE_EMOJI = {"money": "💰", "love": "❤️", "career": "💼", "health": "
 
 def main_menu_keyboard():
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton(f"{SPHERE_EMOJI[key]} {s['title']}", callback_data=f"{SPHERE_CB_PREFIX}{key}") for key, s in list(ct.SPHERES.items())[:2]],
-        [InlineKeyboardButton(f"{SPHERE_EMOJI[key]} {s['title']}", callback_data=f"{SPHERE_CB_PREFIX}{key}") for key, s in list(ct.SPHERES.items())[2:]],
+        [InlineKeyboardButton(f"{SPHERE_EMOJI[key]} {s['title']}", callback_data=f"{SPHERE_CB_PREFIX}{key}")]
+        for key, s in ct.SPHERES.items()
+    ] + [
         [InlineKeyboardButton("🔭 Узнать важные даты", callback_data=FORECAST_CB)],
         [InlineKeyboardButton("✨ Непрожитые жизни", callback_data=UNLIVED_CB)],
         [InlineKeyboardButton("💞 Совместимость", callback_data=COMPAT_CB)],
