@@ -114,6 +114,173 @@ def life_path_steps(day, month, year):
     return steps
 
 
+# проверенные даты и долготы затмений на 2026-2028, сверены по нескольким независимым источникам
+ECLIPSES = [
+    (2026, 2, 17, "solar", 328.83),
+    (2026, 3, 3, "lunar", 162.90),
+    (2026, 8, 12, "solar", 140.03),
+    (2026, 8, 28, "lunar", 334.90),
+    (2027, 2, 6, "solar", 317.63),
+    (2027, 2, 20, "lunar", 152.10),
+    (2027, 7, 18, "lunar", 295.82),
+    (2027, 8, 2, "solar", 129.92),
+    (2027, 8, 17, "lunar", 324.20),
+    (2028, 1, 11, "lunar", 111.47),
+    (2028, 1, 26, "solar", 306.18),
+    (2028, 7, 6, "lunar", 285.18),
+    (2028, 7, 21, "solar", 119.85),
+    (2028, 12, 31, "lunar", 100.55),
+]
+
+
+def find_personal_eclipses(natal_points, now_jd, orb=5):
+    """Ищет затмения из таблицы ECLIPSES, которые попадают в заданный орбис
+    к одной из натальных точек человека (обычно Солнце, Луна, асцендент).
+    natal_points, словарь вида {"sun": долгота, "moon": долгота, ...}.
+    Возвращает только будущие затмения, от now_jd и дальше."""
+    hits = []
+    for y, m, d, etype, ecl_lon in ECLIPSES:
+        ecl_jd = to_jd(y, m, d, 12, 0)
+        if ecl_jd < now_jd:
+            continue
+        for point_name, point_lon_value in natal_points.items():
+            diff = abs(norm360(ecl_lon - point_lon_value))
+            if diff > 180:
+                diff = 360 - diff
+            if diff <= orb:
+                hits.append({"jd": ecl_jd, "type": etype, "point": point_name, "orb": round(diff, 1)})
+                break
+    return hits
+
+
+def equation_of_time_minutes(jd):
+    """Уравнение времени: разница между истинным и средним солнечным
+    полднем, до 16 минут в течение года, нужна для точного часа восхода
+    и заката, не только приблизительного."""
+    L = math.radians(sun_longitude(jd))
+    return 229.18 * (0.000075 + 0.001868 * math.cos(L) - 0.032077 * math.sin(L)
+                      - 0.014615 * math.cos(2 * L) - 0.040849 * math.sin(2 * L))
+
+
+def sunrise_sunset_utc_hours(jd_local_midnight, lat, lon):
+    """Восход и закат Солнца, в часах UTC от полуночи, для конкретных
+    суток (начало суток, jd_local_midnight, JD в 00:00 UTC того дня)
+    и координат места. Учитывает наклон эклиптики и уравнение времени."""
+    jd_noon_approx = jd_local_midnight + 0.5 - lon / 360
+    decl = math.degrees(math.asin(math.sin(math.radians(23.44)) * math.sin(math.radians(sun_longitude(jd_noon_approx)))))
+    lat_r, decl_r = math.radians(lat), math.radians(decl)
+    cos_h = (math.sin(math.radians(-0.833)) - math.sin(lat_r) * math.sin(decl_r)) / (math.cos(lat_r) * math.cos(decl_r))
+    cos_h = max(-1, min(1, cos_h))
+    H = math.degrees(math.acos(cos_h))
+    eot = equation_of_time_minutes(jd_noon_approx) / 60
+    solar_noon_utc = 12 - lon / 15 - eot
+    return solar_noon_utc - H / 15, solar_noon_utc + H / 15
+
+
+CHALDEAN_ORDER = ["saturn", "jupiter", "mars", "sun", "venus", "mercury", "moon"]
+WEEKDAY_RULER = {0: "moon", 1: "mars", 2: "mercury", 3: "jupiter", 4: "venus", 5: "saturn", 6: "sun"}
+# Python: понедельник=0 ... воскресенье=6
+
+
+def planetary_hours(jd_local_midnight, lat, lon, tz_offset, weekday):
+    """24 планетных часа (западная система): 12 дневных от восхода до
+    заката и 12 ночных от заката до следующего восхода, каждый час
+    правит одна из семи классических планет по кругу Халдеев, начиная
+    с планеты-управителя дня недели. weekday передаётся явно, 0=понедельник
+    ... 6=воскресенье, как в datetime.weekday(), чтобы не путать его с
+    часовым поясом при выводе через смещённый JD. Возвращает список из 24
+    словарей с планетой, началом и концом часа в часах локального времени."""
+    sunrise_utc, sunset_utc = sunrise_sunset_utc_hours(jd_local_midnight, lat, lon)
+    next_sunrise_utc, _ = sunrise_sunset_utc_hours(jd_local_midnight + 1, lat, lon)
+    next_sunrise_utc += 24
+
+    ruler = WEEKDAY_RULER[weekday]
+    start_idx = CHALDEAN_ORDER.index(ruler)
+
+    day_step = (sunset_utc - sunrise_utc) / 12
+    night_step = (next_sunrise_utc - sunset_utc) / 12
+
+    hours = []
+    for i in range(12):
+        planet = CHALDEAN_ORDER[(start_idx + i) % 7]
+        hours.append({"planet": planet, "start": sunrise_utc + i * day_step + tz_offset,
+                       "end": sunrise_utc + (i + 1) * day_step + tz_offset, "is_day": True})
+    for i in range(12):
+        planet = CHALDEAN_ORDER[(start_idx + 12 + i) % 7]
+        hours.append({"planet": planet, "start": sunset_utc + i * night_step + tz_offset,
+                       "end": sunset_utc + (i + 1) * night_step + tz_offset, "is_day": False})
+    return hours
+
+
+CHOGHADIYA_NAMES = ["udveg", "chal", "labh", "amrit", "kaal", "shubh", "rog"]
+CHOGHADIYA_OF_PLANET = {"sun": "udveg", "venus": "chal", "mercury": "labh", "moon": "amrit",
+                         "saturn": "kaal", "jupiter": "shubh", "mars": "rog"}
+
+
+def choghadiya(jd_local_midnight, lat, lon, tz_offset, weekday):
+    """8 дневных и 8 ночных чогхадий: каждый день делится на восемь равных
+    частей от восхода до заката, и ещё восемь от заката до следующего
+    восхода. Первая дневная часть определяется планетой-управителем дня
+    недели (weekday передаётся явно, см. planetary_hours), дальше идёт
+    круг Халдеев. Ночная часть начинается на пять шагов вперёд по тому же
+    кругу от дневного старта, отдельное традиционное правило, не
+    продолжение дневного счёта."""
+    sunrise_utc, sunset_utc = sunrise_sunset_utc_hours(jd_local_midnight, lat, lon)
+    next_sunrise_utc, _ = sunrise_sunset_utc_hours(jd_local_midnight + 1, lat, lon)
+    next_sunrise_utc += 24
+
+    ruler = WEEKDAY_RULER[weekday]
+    day_start_idx = CHALDEAN_ORDER.index(ruler)
+    night_start_idx = (day_start_idx + 5) % 7
+
+    day_step = (sunset_utc - sunrise_utc) / 8
+    night_step = (next_sunrise_utc - sunset_utc) / 8
+
+    slots = []
+    for i in range(8):
+        planet = CHALDEAN_ORDER[(day_start_idx + i) % 7]
+        slots.append({"name": CHOGHADIYA_OF_PLANET[planet], "start": sunrise_utc + i * day_step + tz_offset,
+                       "end": sunrise_utc + (i + 1) * day_step + tz_offset, "is_day": True})
+    for i in range(8):
+        planet = CHALDEAN_ORDER[(night_start_idx + i) % 7]
+        slots.append({"name": CHOGHADIYA_OF_PLANET[planet], "start": sunset_utc + i * night_step + tz_offset,
+                       "end": sunset_utc + (i + 1) * night_step + tz_offset, "is_day": False})
+    return slots
+
+
+def find_solar_return_jd(natal_sun_lon, year, birth_month, birth_day):
+    """Точный момент солнечного возвращения (соляра): когда транзитное
+    Солнце в указанном году встаёт ровно на натальную долготу. Ищет
+    методом последовательного приближения от дня рождения в этом году,
+    сходится за несколько шагов, Солнце движется ~0.9856° в сутки."""
+    guess_jd = to_jd(year, birth_month, birth_day, 12, 0)
+    for _ in range(12):
+        current_lon = sun_longitude(guess_jd)
+        diff = norm360(natal_sun_lon - current_lon)
+        if diff > 180:
+            diff -= 360
+        guess_jd += diff / 0.9856
+    return guess_jd
+
+
+def personal_year_number(day, month, current_year):
+    """Число года: день и месяц рождения плюс текущий год, свёрнутые в одну
+    цифру от 1 до 9. В отличие от числа жизненного пути, здесь мастер-числа
+    традиционно не сохраняются, сворачивается до конца."""
+    digits = [int(c) for c in f"{day:02d}{month:02d}{current_year:04d}"]
+    total = sum(digits)
+    while total > 9:
+        total = sum(int(c) for c in str(total))
+    return total
+
+
+def karmic_debt_number(day):
+    """Кармический долг по традиции смотрит на сам день рождения: если это
+    13, 14, 16 или 19 любого месяца, число считается значимым. Есть не у
+    всех, возвращает None, если дня нет в этом списке."""
+    return day if day in (13, 14, 16, 19) else None
+
+
 NAKSHATRAS = [
     "Ашвини", "Бхарани", "Криттика", "Рохини", "Мригашира", "Ардра", "Пунарвасу",
     "Пушья", "Ашлеша", "Магха", "Пурва Пхалгуни", "Уттара Пхалгуни", "Хаста",
@@ -153,6 +320,54 @@ def nakshatra_of(sidereal_moon_lon):
     idx = int(sidereal_moon_lon // span)
     pada = int((sidereal_moon_lon % span) // (span / 4)) + 1
     return {"name": NAKSHATRAS[idx], "pada": pada}
+
+
+# ---------- Виmшоттари-даша: ведическая система периодов планет ----------
+DASHA_YEARS = {"ketu": 7, "venus": 20, "sun": 6, "moon": 10, "mars": 7,
+               "rahu": 18, "jupiter": 16, "saturn": 19, "mercury": 17}
+DASHA_ORDER = ["ketu", "venus", "sun", "moon", "mars", "rahu", "jupiter", "saturn", "mercury"]
+DASHA_YEAR_DAYS = 365.25
+
+
+def dasha_timeline(birth_jd, moon_sidereal_lon, years_ahead=120):
+    """Хронология махадаш (больших периодов) системы Вимшоттари от рождения.
+    Первую дашу и её управителя даёт накшатра Луны при рождении: у каждой
+    накшатры есть управитель по фиксированному циклу из девяти планет
+    (индекс накшатры по модулю 9). Первая даша всегда неполная, остаток
+    считается по тому, сколько градусов накшатры Луна уже прошла к моменту
+    рождения. Дальше периоды идут полными, по кругу, в одном и том же
+    порядке планет, пока не наберётся нужное количество лет вперёд."""
+    nak_span = 360 / 27
+    nak_index = int(moon_sidereal_lon // nak_span)
+    position_in_nak = moon_sidereal_lon % nak_span
+    fraction_elapsed = position_in_nak / nak_span
+
+    start_idx = nak_index % 9
+    first_planet = DASHA_ORDER[start_idx]
+    first_balance_years = DASHA_YEARS[first_planet] * (1 - fraction_elapsed)
+
+    timeline = []
+    cursor_jd = birth_jd
+    end_jd = cursor_jd + first_balance_years * DASHA_YEAR_DAYS
+    timeline.append((first_planet, cursor_jd, end_jd))
+    cursor_jd = end_jd
+
+    idx = (start_idx + 1) % 9
+    while cursor_jd - birth_jd < years_ahead * DASHA_YEAR_DAYS:
+        planet = DASHA_ORDER[idx]
+        end_jd = cursor_jd + DASHA_YEARS[planet] * DASHA_YEAR_DAYS
+        timeline.append((planet, cursor_jd, end_jd))
+        cursor_jd = end_jd
+        idx = (idx + 1) % 9
+
+    return timeline
+
+
+def current_dasha(timeline, now_jd):
+    for planet, start_jd, end_jd in timeline:
+        if start_jd <= now_jd < end_jd:
+            return planet, start_jd, end_jd
+    return None
 
 
 def point_lon(point):
@@ -341,10 +556,10 @@ def compute_chart(date_str, time_str, city_label):
     city_match = geocode_city(city_label)
     used_default_city = city_match is None
     if city_match:
-        city = {"lat": city_match["lat"], "lon": city_match["lon"], "label": city_match["name"]}
+        city = {"lat": city_match["lat"], "lon": city_match["lon"], "label": city_match["name"], "tz": city_match["tz"]}
         tz_offset = utc_offset_hours(city_match["tz"], y, m, d, hour, minute)
     else:
-        city = {"lat": 55.7558, "lon": 37.6173, "label": "Москва"}
+        city = {"lat": 55.7558, "lon": 37.6173, "label": "Москва", "tz": "Europe/Moscow"}
         tz_offset = utc_offset_hours("Europe/Moscow", y, m, d, hour, minute)
 
     utc_hour_float = hour - tz_offset
