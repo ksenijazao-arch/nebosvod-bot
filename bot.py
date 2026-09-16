@@ -12,11 +12,16 @@
     -> кнопка "Узнать важные даты" присылает прогноз на два года по Юпитеру и Сатурну
 """
 import asyncio
+import base64
+import json
 import logging
 import os
 import random
 import re
 import threading
+import urllib.error
+import urllib.request
+import uuid
 from datetime import date, timedelta
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
@@ -34,6 +39,11 @@ import content as ct
 
 DATABASE_URL = os.environ.get("DATABASE_URL")
 BROADCAST_PASSWORD = os.environ.get("BROADCAST_PASSWORD", "")
+YOOKASSA_SHOP_ID = os.environ.get("YOOKASSA_SHOP_ID", "")
+YOOKASSA_SECRET_KEY = os.environ.get("YOOKASSA_SECRET_KEY", "")
+
+FEATURE_PRICE = {"tomorrow": 100, "compat": 199, "numerology": 99}
+FEATURE_LABEL = {"tomorrow": "«Что ждёт меня завтра» на сутки", "compat": "разбор совместимости", "numerology": "число жизненного пути"}
 
 
 def db_connect():
@@ -45,6 +55,18 @@ def db_init():
         return
     with db_connect() as conn, conn.cursor() as cur:
         cur.execute("CREATE TABLE IF NOT EXISTS users (chat_id BIGINT PRIMARY KEY, first_seen TIMESTAMPTZ DEFAULT now())")
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS payments (
+                id SERIAL PRIMARY KEY,
+                chat_id BIGINT NOT NULL,
+                feature TEXT NOT NULL,
+                yookassa_payment_id TEXT,
+                status TEXT NOT NULL DEFAULT 'pending',
+                amount NUMERIC NOT NULL,
+                created_at TIMESTAMPTZ DEFAULT now(),
+                valid_until TIMESTAMPTZ
+            )
+        """)
         conn.commit()
 
 
@@ -63,6 +85,189 @@ def db_all_users():
     with db_connect() as conn, conn.cursor() as cur:
         cur.execute("SELECT chat_id FROM users")
         return [row[0] for row in cur.fetchall()]
+
+
+def db_has_access(chat_id, feature):
+    if not DATABASE_URL:
+        return False
+    with db_connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT 1 FROM payments WHERE chat_id=%s AND feature=%s AND status='succeeded' "
+            "AND (valid_until IS NULL OR valid_until > now()) LIMIT 1",
+            (chat_id, feature),
+        )
+        return cur.fetchone() is not None
+
+
+def db_create_pending_payment(chat_id, feature, yookassa_payment_id, amount):
+    with db_connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO payments (chat_id, feature, yookassa_payment_id, status, amount) "
+            "VALUES (%s, %s, %s, 'pending', %s) RETURNING id",
+            (chat_id, feature, yookassa_payment_id, amount),
+        )
+        row_id = cur.fetchone()[0]
+        conn.commit()
+        return row_id
+
+
+def db_latest_pending_payment(chat_id, feature):
+    with db_connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT id, yookassa_payment_id FROM payments WHERE chat_id=%s AND feature=%s "
+            "AND status='pending' ORDER BY created_at DESC LIMIT 1",
+            (chat_id, feature),
+        )
+        return cur.fetchone()
+
+
+def db_mark_succeeded(row_id, feature):
+    valid_until = None if feature != "tomorrow" else "now() + interval '24 hours'"
+    with db_connect() as conn, conn.cursor() as cur:
+        if valid_until:
+            cur.execute(f"UPDATE payments SET status='succeeded', valid_until={valid_until} WHERE id=%s", (row_id,))
+        else:
+            cur.execute("UPDATE payments SET status='succeeded' WHERE id=%s", (row_id,))
+        conn.commit()
+
+
+def _yookassa_request(method, path, body=None):
+    """Синхронный запрос к API ЮKassa, вызывается через executor, чтобы не
+    блокировать основной цикл бота. Базовая авторизация shopId/secretKey,
+    как того требует документация ЮKassa."""
+    auth = base64.b64encode(f"{YOOKASSA_SHOP_ID}:{YOOKASSA_SECRET_KEY}".encode()).decode()
+    headers = {"Authorization": f"Basic {auth}", "Content-Type": "application/json"}
+    data = None
+    if body is not None:
+        headers["Idempotence-Key"] = str(uuid.uuid4())
+        data = json.dumps(body).encode()
+    req = urllib.request.Request(f"https://api.yookassa.ru/v3/{path}", data=data, headers=headers, method=method)
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            return json.loads(resp.read().decode())
+    except urllib.error.HTTPError as e:
+        logging.error("ЮKassa HTTP ошибка %s: %s", e.code, e.read().decode(errors="ignore"))
+        return None
+    except Exception:
+        logging.exception("ЮKassa: не удалось выполнить запрос")
+        return None
+
+
+async def yookassa_create_payment(amount, description, return_url):
+    """Создаёт платёж в ЮKassa, возвращает (payment_id, confirmation_url)
+    или (None, None) при ошибке."""
+    body = {
+        "amount": {"value": f"{amount:.2f}", "currency": "RUB"},
+        "confirmation": {"type": "redirect", "return_url": return_url},
+        "capture": True,
+        "description": description,
+    }
+    loop = asyncio.get_event_loop()
+    result = await loop.run_in_executor(None, _yookassa_request, "POST", "payments", body)
+    if not result or "id" not in result:
+        return None, None
+    return result["id"], result.get("confirmation", {}).get("confirmation_url")
+
+
+async def yookassa_check_payment(payment_id):
+    """Возвращает текущий статус платежа ('pending', 'succeeded', 'canceled'
+    и т.д.) или None при ошибке связи."""
+    loop = asyncio.get_event_loop()
+    result = await loop.run_in_executor(None, _yookassa_request, "GET", f"payments/{payment_id}")
+    return result.get("status") if result else None
+
+
+async def payment_gate(chat_id: int, context: ContextTypes.DEFAULT_TYPE, feature: str) -> bool:
+    """Проверяет доступ к платной функции. Если уже оплачено и действует,
+    возвращает True, вызывающий код продолжает как обычно. Если нет, сама
+    создаёт платёж в ЮKassa, присылает ссылку и кнопку подтверждения,
+    возвращает False, вызывающий код должен остановиться."""
+    if db_has_access(chat_id, feature):
+        return True
+    amount = FEATURE_PRICE[feature]
+    payment_id, url = await yookassa_create_payment(
+        amount, f"Небосвод: {FEATURE_LABEL[feature]}", "https://t.me/nebosvod_astro_bot"
+    )
+    if not payment_id or not url:
+        await context.bot.send_message(
+            chat_id=chat_id, text="Не получилось создать платёж, попробуйте, пожалуйста, ещё раз через минуту."
+        )
+        return False
+    db_create_pending_payment(chat_id, feature, payment_id, amount)
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("💳 Оплатить", url=url)],
+        [InlineKeyboardButton("✅ Я оплатил(а)", callback_data=f"paycheck:{feature}")],
+    ])
+    await context.bot.send_message(
+        chat_id=chat_id,
+        text=f"Эта часть платная, {amount} ₽. Оплатите по кнопке ниже, а после нажмите «Я оплатил(а)», я проверю и сразу продолжу.",
+        reply_markup=keyboard,
+    )
+    return False
+
+
+async def payment_confirm_compat(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Отдельная точка входа именно для совместимости: это часть compat_conv,
+    поэтому обязана вернуть состояние диалога, как и start_compat, иначе бот
+    забудет, что дальше ждёт дату партнёра."""
+    query = update.callback_query
+    await query.answer()
+    chat_id = query.message.chat_id
+    row = db_latest_pending_payment(chat_id, "compat")
+    if not row:
+        await context.bot.send_message(chat_id=chat_id, text="Не нашла платёж для проверки. Попробуйте начать заново.")
+        return ConversationHandler.END
+    row_id, yookassa_payment_id = row
+    status = await yookassa_check_payment(yookassa_payment_id)
+    if status == "succeeded":
+        db_mark_succeeded(row_id, "compat")
+        await context.bot.send_message(chat_id=chat_id, text="Оплата прошла! Продолжаю.")
+        return await _start_compat_core(chat_id, context)
+    elif status in ("pending", "waiting_for_capture"):
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text="Пока не вижу подтверждения оплаты. Если только что оплатили, подождите полминуты и нажмите кнопку ещё раз.",
+        )
+        return ConversationHandler.END
+    else:
+        await context.bot.send_message(
+            chat_id=chat_id, text="Оплата не прошла или была отменена. Попробуйте начать заново с той же кнопки."
+        )
+        return ConversationHandler.END
+
+
+async def payment_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Для числа жизненного пути и «завтра»: обе не многошаговые, обычный
+    обработчик без состояний подходит без проблем."""
+    query = update.callback_query
+    await query.answer()
+    chat_id = query.message.chat_id
+    feature = query.data.split(":", 1)[1]
+
+    row = db_latest_pending_payment(chat_id, feature)
+    if not row:
+        await context.bot.send_message(chat_id=chat_id, text="Не нашла платёж для проверки. Попробуйте начать заново.")
+        return
+    row_id, yookassa_payment_id = row
+    status = await yookassa_check_payment(yookassa_payment_id)
+
+    if status == "succeeded":
+        db_mark_succeeded(row_id, feature)
+        await context.bot.send_message(chat_id=chat_id, text="Оплата прошла! Продолжаю.")
+        if feature == "numerology":
+            await _numerology_core(chat_id, context)
+        elif feature == "tomorrow":
+            await _tomorrow_menu_core(chat_id, context)
+    elif status in ("pending", "waiting_for_capture"):
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text="Пока не вижу подтверждения оплаты. Если только что оплатили, подождите полминуты и нажмите кнопку ещё раз.",
+        )
+    else:
+        await context.bot.send_message(
+            chat_id=chat_id, text="Оплата не прошла или была отменена. Попробуйте начать заново с той же кнопки."
+        )
+
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
 log = logging.getLogger("nebosvod")
@@ -217,9 +422,14 @@ async def skip_city(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 async def start_compat(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
-    chat_id = query.message.chat_id
+    return await _start_compat_core(query.message.chat_id, context)
+
+
+async def _start_compat_core(chat_id: int, context: ContextTypes.DEFAULT_TYPE) -> int:
     if not context.user_data.get("chart"):
         await context.bot.send_message(chat_id=chat_id, text="Сначала пройдите разбор заново: /start")
+        return ConversationHandler.END
+    if not await payment_gate(chat_id, context, "compat"):
         return ConversationHandler.END
     avatar_path = os.path.join(os.path.dirname(__file__), "avatar.png")
     if os.path.exists(avatar_path):
@@ -227,7 +437,7 @@ async def start_compat(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
             await context.bot.send_photo(chat_id=chat_id, photo=f, caption="💞 Совместимость двух карт")
     await send_bot(
         context, chat_id,
-        "Хорошо, сравним карты (199 ₽ за разбор). Дата рождения партнёра, в формате ДД.ММ.ГГГГ, например 20.08.1993.",
+        "Хорошо, сравним карты. Дата рождения партнёра, в формате ДД.ММ.ГГГГ, например 20.08.1993.",
         0.6,
     )
     return ASK_PARTNER_DATE
@@ -384,10 +594,15 @@ async def deliver_synastry(update: Update, context: ContextTypes.DEFAULT_TYPE, c
 async def numerology(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    chat_id = query.message.chat_id
+    await _numerology_core(query.message.chat_id, context)
+
+
+async def _numerology_core(chat_id: int, context: ContextTypes.DEFAULT_TYPE):
     date_str = context.user_data.get("date_str")
     if not date_str:
         await context.bot.send_message(chat_id=chat_id, text="Сначала пройдите разбор заново: /start")
+        return
+    if not await payment_gate(chat_id, context, "numerology"):
         return
     year, month, day = (int(x) for x in date_str.split("-"))
     steps = ac.life_path_steps(day, month, year)
@@ -398,7 +613,7 @@ async def numerology(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chain = " → ".join(str(s) for s in steps)
     date_label = f"{day:02d}.{month:02d}.{year:04d}"
 
-    await send_bot(context, chat_id, "Считаю число жизненного пути по дате рождения (99 ₽ за разбор)…", 0.9)
+    await send_bot(context, chat_id, "Считаю число жизненного пути по дате рождения…", 0.9)
     await send_bot(
         context, chat_id,
         "В нумерологии число жизненного пути получают одним и тем же способом уже больше века: "
@@ -457,7 +672,10 @@ async def numerology(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def tomorrow_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    chat_id = query.message.chat_id
+    await _tomorrow_menu_core(query.message.chat_id, context)
+
+
+async def _tomorrow_menu_core(chat_id: int, context: ContextTypes.DEFAULT_TYPE):
     chart = context.user_data.get("chart")
     if not chart or not (chart["has_time"] and chart["city"].get("lat")):
         await context.bot.send_message(
@@ -465,13 +683,15 @@ async def tomorrow_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
             text="Для этого нужен город рождения с известными координатами. Пройдите разбор заново и укажите город.",
         )
         return
+    if not await payment_gate(chat_id, context, "tomorrow"):
+        return
     keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton("⏰ Западные часы", callback_data=TOMORROW_WESTERN_CB)],
         [InlineKeyboardButton("🕉️ Чогхадия", callback_data=TOMORROW_CHOGHADIYA_CB)],
     ])
     await send_bot(
         context, chat_id,
-        "Есть две традиции для этого, обе настоящие, просто разные: западные планетные часы или ведическая чогхадия. Доступ на сутки, 100 ₽. Что показать?",
+        "Есть две традиции для этого, обе настоящие, просто разные: западные планетные часы или ведическая чогхадия. Что показать?",
         0.8, reply_markup=keyboard,
     )
 
@@ -598,9 +818,9 @@ def main_menu_keyboard():
     ] + [
         [InlineKeyboardButton("🔭 Узнать важные даты", callback_data=FORECAST_CB)],
         [InlineKeyboardButton("✨ Непрожитые жизни", callback_data=UNLIVED_CB)],
-        [InlineKeyboardButton("💞 Совместимость — 199 ₽", callback_data=COMPAT_CB)],
-        [InlineKeyboardButton("🔢 Число жизненного пути — 99 ₽", callback_data=NUMEROLOGY_CB)],
-        [InlineKeyboardButton("🌅 Что ждёт меня завтра — 100 ₽/сутки", callback_data=TOMORROW_CB)],
+        [InlineKeyboardButton("💞 Совместимость, 199 ₽", callback_data=COMPAT_CB)],
+        [InlineKeyboardButton("🔢 Число жизненного пути, 99 ₽", callback_data=NUMEROLOGY_CB)],
+        [InlineKeyboardButton("🌅 Что ждёт меня завтра, 100 ₽/сутки", callback_data=TOMORROW_CB)],
         [InlineKeyboardButton("🔄 Начать заново", callback_data=RESTART_CB)],
     ])
 
@@ -1165,7 +1385,10 @@ def main():
     application.add_handler(conv)
 
     compat_conv = ConversationHandler(
-        entry_points=[CallbackQueryHandler(start_compat, pattern=f"^{COMPAT_CB}$")],
+        entry_points=[
+            CallbackQueryHandler(start_compat, pattern=f"^{COMPAT_CB}$"),
+            CallbackQueryHandler(payment_confirm_compat, pattern="^paycheck:compat$"),
+        ],
         states={
             ASK_PARTNER_DATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, got_partner_date)],
             ASK_PARTNER_TIME: [
@@ -1189,6 +1412,7 @@ def main():
     application.add_handler(CallbackQueryHandler(tomorrow_western, pattern=f"^{TOMORROW_WESTERN_CB}$"))
     application.add_handler(CallbackQueryHandler(tomorrow_choghadiya, pattern=f"^{TOMORROW_CHOGHADIYA_CB}$"))
     application.add_handler(CallbackQueryHandler(send_full_menu, pattern=f"^{SHOW_MENU_CB}$"))
+    application.add_handler(CallbackQueryHandler(payment_confirm, pattern="^paycheck:(numerology|tomorrow)$"))
     application.add_handler(CommandHandler("broadcast", broadcast))
     application.add_handler(CommandHandler("stats", stats))
 
