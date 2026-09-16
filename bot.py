@@ -30,7 +30,7 @@ from PIL import Image, ImageDraw, ImageFont
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, ReplyKeyboardRemove, Update
 from telegram.ext import (
-    Application, CallbackQueryHandler, CommandHandler, ContextTypes,
+    Application, ApplicationHandlerStop, CallbackQueryHandler, CommandHandler, ContextTypes,
     ConversationHandler, MessageHandler, filters,
 )
 
@@ -55,6 +55,7 @@ def db_init():
         return
     with db_connect() as conn, conn.cursor() as cur:
         cur.execute("CREATE TABLE IF NOT EXISTS users (chat_id BIGINT PRIMARY KEY, first_seen TIMESTAMPTZ DEFAULT now())")
+        cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS email TEXT")
         cur.execute("""
             CREATE TABLE IF NOT EXISTS payments (
                 id SERIAL PRIMARY KEY,
@@ -85,6 +86,19 @@ def db_all_users():
     with db_connect() as conn, conn.cursor() as cur:
         cur.execute("SELECT chat_id FROM users")
         return [row[0] for row in cur.fetchall()]
+
+
+def db_get_email(chat_id):
+    with db_connect() as conn, conn.cursor() as cur:
+        cur.execute("SELECT email FROM users WHERE chat_id=%s", (chat_id,))
+        row = cur.fetchone()
+        return row[0] if row else None
+
+
+def db_set_email(chat_id, email):
+    with db_connect() as conn, conn.cursor() as cur:
+        cur.execute("UPDATE users SET email=%s WHERE chat_id=%s", (email, chat_id))
+        conn.commit()
 
 
 def db_has_access(chat_id, feature):
@@ -153,14 +167,26 @@ def _yookassa_request(method, path, body=None):
         return None
 
 
-async def yookassa_create_payment(amount, description, return_url):
+async def yookassa_create_payment(amount, description, return_url, email):
     """Создаёт платёж в ЮKassa, возвращает (payment_id, confirmation_url)
-    или (None, None) при ошибке."""
+    или (None, None) при ошибке. Чек обязателен по 54-ФЗ, без него ЮKassa
+    отвечает 400 invalid_request; email нужен, чтобы было куда его прислать."""
     body = {
         "amount": {"value": f"{amount:.2f}", "currency": "RUB"},
         "confirmation": {"type": "redirect", "return_url": return_url},
         "capture": True,
         "description": description,
+        "receipt": {
+            "customer": {"email": email},
+            "items": [{
+                "description": description,
+                "quantity": "1.00",
+                "amount": {"value": f"{amount:.2f}", "currency": "RUB"},
+                "vat_code": 1,
+                "payment_mode": "full_payment",
+                "payment_subject": "service",
+            }],
+        },
     }
     loop = asyncio.get_event_loop()
     result = await loop.run_in_executor(None, _yookassa_request, "POST", "payments", body)
@@ -179,14 +205,28 @@ async def yookassa_check_payment(payment_id):
 
 async def payment_gate(chat_id: int, context: ContextTypes.DEFAULT_TYPE, feature: str) -> bool:
     """Проверяет доступ к платной функции. Если уже оплачено и действует,
-    возвращает True, вызывающий код продолжает как обычно. Если нет, сама
-    создаёт платёж в ЮKassa, присылает ссылку и кнопку подтверждения,
-    возвращает False, вызывающий код должен остановиться."""
+    возвращает True, вызывающий код продолжает как обычно. Если нет, а
+    почты для чека ещё нет, сначала спрашивает её и ждёт следующим
+    сообщением. Как только почта есть, сама создаёт платёж в ЮKassa,
+    присылает ссылку и кнопку подтверждения. В обоих случаях, кроме
+    успешного доступа, возвращает False, вызывающий код должен
+    остановиться."""
     if db_has_access(chat_id, feature):
         return True
+
+    email = context.user_data.get("email") or db_get_email(chat_id)
+    if not email:
+        context.user_data["awaiting_email_for"] = feature
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text="Перед оплатой нужна почта, на неё ЮKassa пришлёт кассовый чек, это требование закона, не моя прихоть. Пришлите её одним сообщением.",
+        )
+        return False
+    context.user_data["email"] = email
+
     amount = FEATURE_PRICE[feature]
     payment_id, url = await yookassa_create_payment(
-        amount, f"Небосвод: {FEATURE_LABEL[feature]}", "https://t.me/nebosvod_astro_bot"
+        amount, f"Небосвод: {FEATURE_LABEL[feature]}", "https://t.me/nebosvod_astro_bot", email
     )
     if not payment_id or not url:
         await context.bot.send_message(
@@ -204,6 +244,35 @@ async def payment_gate(chat_id: int, context: ContextTypes.DEFAULT_TYPE, feature
         reply_markup=keyboard,
     )
     return False
+
+
+EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+
+async def email_intercept(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Стоит перед остальными обработчиками (ранняя группа). Если бот
+    сейчас ждёт почту для чека, забирает это сообщение себе и продолжает
+    платёж. Если не ждёт, ничего не делает и не мешает остальным
+    обработчикам разбирать это же сообщение как обычно."""
+    feature = context.user_data.get("awaiting_email_for")
+    if not feature:
+        return
+    text = (update.message.text or "").strip()
+    if not EMAIL_RE.match(text):
+        await update.message.reply_text("Это не похоже на почту, пришлите, пожалуйста, в формате имя@почта.ру.")
+        raise ApplicationHandlerStop
+    chat_id = update.effective_chat.id
+    db_set_email(chat_id, text)
+    context.user_data["email"] = text
+    del context.user_data["awaiting_email_for"]
+    await update.message.reply_text("Спасибо, записала. Продолжаю с оплатой.")
+    if feature == "compat":
+        await _start_compat_core(chat_id, context)
+    elif feature == "numerology":
+        await _numerology_core(chat_id, context)
+    elif feature == "tomorrow":
+        await _tomorrow_menu_core(chat_id, context)
+    raise ApplicationHandlerStop
 
 
 async def payment_confirm_compat(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -1382,6 +1451,7 @@ def main():
         fallbacks=[CommandHandler("cancel", cancel), CommandHandler("start", start)],
     )
 
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, email_intercept), group=-1)
     application.add_handler(conv)
 
     compat_conv = ConversationHandler(
