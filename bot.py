@@ -227,7 +227,7 @@ async def start_compat(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
             await context.bot.send_photo(chat_id=chat_id, photo=f, caption="💞 Совместимость двух карт")
     await send_bot(
         context, chat_id,
-        "Хорошо, сравним карты. Дата рождения партнёра, в формате ДД.ММ.ГГГГ, например 20.08.1993.",
+        "Хорошо, сравним карты (199 ₽ за разбор). Дата рождения партнёра, в формате ДД.ММ.ГГГГ, например 20.08.1993.",
         0.6,
     )
     return ASK_PARTNER_DATE
@@ -398,7 +398,7 @@ async def numerology(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chain = " → ".join(str(s) for s in steps)
     date_label = f"{day:02d}.{month:02d}.{year:04d}"
 
-    await send_bot(context, chat_id, "Считаю число жизненного пути по дате рождения…", 0.9)
+    await send_bot(context, chat_id, "Считаю число жизненного пути по дате рождения (99 ₽ за разбор)…", 0.9)
     await send_bot(
         context, chat_id,
         "В нумерологии число жизненного пути получают одним и тем же способом уже больше века: "
@@ -471,7 +471,7 @@ async def tomorrow_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ])
     await send_bot(
         context, chat_id,
-        "Есть две традиции для этого, обе настоящие, просто разные: западные планетные часы или ведическая чогхадия. Что показать?",
+        "Есть две традиции для этого, обе настоящие, просто разные: западные планетные часы или ведическая чогхадия. Доступ на сутки, 100 ₽. Что показать?",
         0.8, reply_markup=keyboard,
     )
 
@@ -598,9 +598,9 @@ def main_menu_keyboard():
     ] + [
         [InlineKeyboardButton("🔭 Узнать важные даты", callback_data=FORECAST_CB)],
         [InlineKeyboardButton("✨ Непрожитые жизни", callback_data=UNLIVED_CB)],
-        [InlineKeyboardButton("💞 Совместимость", callback_data=COMPAT_CB)],
-        [InlineKeyboardButton("🔢 Число жизненного пути", callback_data=NUMEROLOGY_CB)],
-        [InlineKeyboardButton("🌅 Что ждёт меня завтра", callback_data=TOMORROW_CB)],
+        [InlineKeyboardButton("💞 Совместимость — 199 ₽", callback_data=COMPAT_CB)],
+        [InlineKeyboardButton("🔢 Число жизненного пути — 99 ₽", callback_data=NUMEROLOGY_CB)],
+        [InlineKeyboardButton("🌅 Что ждёт меня завтра — 100 ₽/сутки", callback_data=TOMORROW_CB)],
         [InlineKeyboardButton("🔄 Начать заново", callback_data=RESTART_CB)],
     ])
 
