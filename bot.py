@@ -14,12 +14,14 @@
 import asyncio
 import logging
 import os
+import random
 import re
 import threading
-from datetime import date
+from datetime import date, timedelta
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import psycopg2
+from PIL import Image, ImageDraw, ImageFont
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, ReplyKeyboardRemove, Update
 from telegram.ext import (
@@ -75,6 +77,9 @@ SKIP_CITY_CB = "skip_city"
 GENDER_CB_PREFIX = "gender:"
 COMPAT_CB = "compat"
 NUMEROLOGY_CB = "numerology"
+TOMORROW_CB = "tomorrow"
+TOMORROW_WESTERN_CB = "tmrw_west"
+TOMORROW_CHOGHADIYA_CB = "tmrw_chog"
 SKIP_PARTNER_TIME_CB = "skip_ptime"
 SKIP_PARTNER_CITY_CB = "skip_pcity"
 FORECAST_CB = "forecast"
@@ -403,6 +408,162 @@ async def numerology(update: Update, context: ContextTypes.DEFAULT_TYPE):
         1.8,
     )
     await send_bot(context, chat_id, ct.LIFE_PATH_TEXTS[str(number)], 1.5)
+
+    this_year = date.today().year
+    py_number = ac.personal_year_number(day, month, this_year)
+    await send_bot(
+        context, chat_id,
+        f"И ещё одно число, которое обновляется каждый год само: число {this_year} года для вас {py_number}.\n\n"
+        f"{ct.PERSONAL_YEAR_TEXTS[str(py_number)]}",
+        1.6,
+    )
+
+    karmic = ac.karmic_debt_number(day)
+    if karmic:
+        await send_bot(context, chat_id, ct.KARMIC_DEBT_TEXTS[str(karmic)], 1.4)
+
+    chart = context.user_data.get("chart")
+    if chart and chart["has_time"] and chart["rising"]:
+        natal_sun_lon = ac.point_lon(chart["sun"])
+        sr_jd = ac.find_solar_return_jd(natal_sun_lon, this_year, month, day)
+        today_jd = ac.to_jd(date.today().year, date.today().month, date.today().day, 0, 0)
+        if sr_jd < today_jd:
+            sr_jd = ac.find_solar_return_jd(natal_sun_lon, this_year + 1, month, day)
+        sr_rising = ac.sign_of(ac.ascendant(sr_jd, chart["city"]["lat"], chart["city"]["lon"]))
+        sr_year, sr_month, sr_day = ac.jd_to_ymd(sr_jd)
+        await send_bot(
+            context, chat_id,
+            f"И западный аналог того же вопроса, солнечное возвращение: точный момент, когда Солнце в этом году "
+            f"встаёт ровно на ваше натальное место, {sr_day} {['янв','фев','мар','апр','мая','июн','июл','авг','сен','окт','ноя','дек'][sr_month-1]} {sr_year}.\n\n"
+            f"{ct.SOLAR_RETURN_TEXTS[sr_rising['sign']]}",
+            1.8,
+        )
+
+    if chart:
+        moon_sid_lon_card = ac.sidereal_lon(ac.point_lon(chart["moon"]), chart["birth_jd"])
+        nakshatra_card = ac.nakshatra_of(moon_sid_lon_card)["name"]
+        card_path = f"/tmp/card_{chat_id}.png"
+        make_share_card(nakshatra_card, number, card_path)
+        with open(card_path, "rb") as f:
+            await context.bot.send_photo(
+                chat_id=chat_id, photo=f,
+                caption="Карточка на сохранение, можно переслать в сторис.",
+            )
+        os.remove(card_path)
+
+    await send_menu(context, chat_id)
+
+
+async def tomorrow_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    chat_id = query.message.chat_id
+    chart = context.user_data.get("chart")
+    if not chart or not (chart["has_time"] and chart["city"].get("lat")):
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text="Для этого нужен город рождения с известными координатами. Пройдите разбор заново и укажите город.",
+        )
+        return
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("⏰ Западные часы", callback_data=TOMORROW_WESTERN_CB)],
+        [InlineKeyboardButton("🕉️ Чогхадия", callback_data=TOMORROW_CHOGHADIYA_CB)],
+    ])
+    await send_bot(
+        context, chat_id,
+        "Есть две традиции для этого, обе настоящие, просто разные: западные планетные часы или ведическая чогхадия. Что показать?",
+        0.8, reply_markup=keyboard,
+    )
+
+
+def _tomorrow_setup(chart):
+    tomorrow = date.today() + timedelta(days=1)
+    tz_offset = ac.utc_offset_hours(chart["city"]["tz"], tomorrow.year, tomorrow.month, tomorrow.day, 12, 0)
+    jd_midnight = ac.to_jd(tomorrow.year, tomorrow.month, tomorrow.day, 0, 0) - tz_offset / 24
+    return tomorrow, jd_midnight, tz_offset
+
+
+def _fmt_hm(h):
+    h = h % 24
+    hh, mm = int(h), int(round((h % 1) * 60))
+    if mm == 60:
+        mm = 0
+        hh = (hh + 1) % 24
+    return f"{hh:02d}:{mm:02d}"
+
+
+async def tomorrow_western(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    chat_id = query.message.chat_id
+    chart = context.user_data.get("chart")
+    if not chart:
+        return
+    tomorrow, jd_midnight, tz_offset = _tomorrow_setup(chart)
+    hours = ac.planetary_hours(jd_midnight, chart["city"]["lat"], chart["city"]["lon"], tz_offset, tomorrow.weekday())
+    day_hours = hours[:12]
+
+    best_priority = ["jupiter", "venus", "mercury", "moon"]
+    worst_priority = ["saturn", "mars", "sun"]
+    best = next(h for p in best_priority for h in day_hours if h["planet"] == p)
+    worst = next(h for p in worst_priority for h in day_hours if h["planet"] == p)
+
+    date_label = tomorrow.strftime("%d.%m.%Y")
+    await send_bot(
+        context, chat_id,
+        f"⏰ Завтра, {date_label}, по западным часам:\n\n"
+        f"✅ Лучшее окно: {_fmt_hm(best['start'])}–{_fmt_hm(best['end'])}, {ct.PLANET_LABEL[best['planet']].lower()}. "
+        f"{ct.PLANET_HOUR_TEXTS[best['planet']]}\n\n"
+        f"⚠️ Стоит быть осторожнее: {_fmt_hm(worst['start'])}–{_fmt_hm(worst['end'])}, {ct.PLANET_LABEL[worst['planet']].lower()}. "
+        f"{ct.PLANET_HOUR_TEXTS[worst['planet']]}",
+        1.8,
+    )
+
+    lines = ["🔭 Полная сетка часов, если нужна точность:\n\nДнём:"]
+    for h in hours[:12]:
+        lines.append(f"{_fmt_hm(h['start'])}–{_fmt_hm(h['end'])} {ct.PLANET_LABEL[h['planet']]}")
+    lines.append("\nНочью:")
+    for h in hours[12:]:
+        lines.append(f"{_fmt_hm(h['start'])}–{_fmt_hm(h['end'])} {ct.PLANET_LABEL[h['planet']]}")
+    await send_bot(context, chat_id, "\n".join(lines), 1.3)
+
+    await send_menu(context, chat_id)
+
+
+async def tomorrow_choghadiya(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    chat_id = query.message.chat_id
+    chart = context.user_data.get("chart")
+    if not chart:
+        return
+    tomorrow, jd_midnight, tz_offset = _tomorrow_setup(chart)
+    slots = ac.choghadiya(jd_midnight, chart["city"]["lat"], chart["city"]["lon"], tz_offset, tomorrow.weekday())
+    day_slots = slots[:8]
+
+    best_priority = ["amrit", "shubh", "labh", "chal"]
+    worst_priority = ["kaal", "rog", "udveg"]
+    best = next(s for p in best_priority for s in day_slots if s["name"] == p)
+    worst = next(s for p in worst_priority for s in day_slots if s["name"] == p)
+
+    date_label = tomorrow.strftime("%d.%m.%Y")
+    await send_bot(
+        context, chat_id,
+        f"🕉️ Завтра, {date_label}, по чогхадии:\n\n"
+        f"✅ Лучшее окно: {_fmt_hm(best['start'])}–{_fmt_hm(best['end'])}, {ct.CHOGHADIYA_LABEL[best['name']]}. "
+        f"{ct.CHOGHADIYA_TEXTS[best['name']]}\n\n"
+        f"⚠️ Стоит быть осторожнее: {_fmt_hm(worst['start'])}–{_fmt_hm(worst['end'])}, {ct.CHOGHADIYA_LABEL[worst['name']]}. "
+        f"{ct.CHOGHADIYA_TEXTS[worst['name']]}",
+        1.8,
+    )
+
+    lines = ["🔭 Полная сетка на день, если нужна точность:\n\nДнём:"]
+    for s in slots[:8]:
+        lines.append(f"{_fmt_hm(s['start'])}–{_fmt_hm(s['end'])} {ct.CHOGHADIYA_LABEL[s['name']]}")
+    lines.append("\nНочью:")
+    for s in slots[8:]:
+        lines.append(f"{_fmt_hm(s['start'])}–{_fmt_hm(s['end'])} {ct.CHOGHADIYA_LABEL[s['name']]}")
+    await send_bot(context, chat_id, "\n".join(lines), 1.3)
     await send_menu(context, chat_id)
 
 
@@ -420,8 +581,61 @@ def main_menu_keyboard():
         [InlineKeyboardButton("✨ Непрожитые жизни", callback_data=UNLIVED_CB)],
         [InlineKeyboardButton("💞 Совместимость", callback_data=COMPAT_CB)],
         [InlineKeyboardButton("🔢 Число жизненного пути", callback_data=NUMEROLOGY_CB)],
+        [InlineKeyboardButton("🌅 Что ждёт меня завтра", callback_data=TOMORROW_CB)],
         [InlineKeyboardButton("🔄 Начать заново", callback_data=RESTART_CB)],
     ])
+
+
+FONTS_DIR = os.path.join(os.path.dirname(__file__), "fonts")
+
+
+def make_share_card(nakshatra, life_path_num, out_path):
+    """Собирает карточку 1080x1920 в стиле бота (тёмный индиго-фон, золотой
+    полумесяц, звёзды) с накшатрой и числом жизненного пути, для пересылки
+    в сторис. Шрифты идут своими файлами, не полагается на системные."""
+    W, H = 1080, 1920
+    img = Image.new("RGB", (W, H), "#0d0a1a")
+    draw = ImageDraw.Draw(img)
+    top, bottom = (13, 10, 26), (40, 24, 74)
+    for y in range(H):
+        t = y / H
+        draw.line([(0, y), (W, y)], fill=tuple(int(top[i] + (bottom[i] - top[i]) * t) for i in range(3)))
+
+    random.seed(hash((nakshatra, life_path_num)) % 10000)
+    for _ in range(150):
+        x, y = random.randint(0, W), random.randint(0, H)
+        r = random.choice([1, 1, 1, 2, 2, 3])
+        draw.ellipse([x - r, y - r, x + r, y + r], fill=(255, 255, 255))
+    random.seed()
+
+    moon_cx, moon_cy, moon_r = W // 2, 260, 110
+    draw.ellipse([moon_cx - moon_r, moon_cy - moon_r, moon_cx + moon_r, moon_cy + moon_r], fill="#f2c14e")
+    draw.ellipse([moon_cx - moon_r + 46, moon_cy - moon_r, moon_cx + moon_r + 46, moon_cy + moon_r],
+                 fill=(top[0], top[1] + 7, top[2] + 20))
+
+    f_label = ImageFont.truetype(os.path.join(FONTS_DIR, "DejaVuSans.ttf"), 34)
+    f_value = ImageFont.truetype(os.path.join(FONTS_DIR, "DejaVuSans-Bold.ttf"), 58)
+    f_big = ImageFont.truetype(os.path.join(FONTS_DIR, "DejaVuSans-Bold.ttf"), 230)
+    f_brand = ImageFont.truetype(os.path.join(FONTS_DIR, "DejaVuSans-Bold.ttf"), 40)
+    f_tag = ImageFont.truetype(os.path.join(FONTS_DIR, "DejaVuSans.ttf"), 30)
+    f_sub = ImageFont.truetype(os.path.join(FONTS_DIR, "DejaVuSans-Oblique.ttf"), 26)
+
+    def center_text(y, text, font, fill):
+        bbox = draw.textbbox((0, 0), text, font=font)
+        draw.text(((W - (bbox[2] - bbox[0])) // 2, y), text, font=font, fill=fill)
+
+    center_text(420, "НЕБОСВОД", f_brand, "#f2c14e")
+    draw.line([(W // 2 - 90, 485), (W // 2 + 90, 485)], fill="#5a4f8c", width=2)
+    center_text(650, "число жизненного пути", f_label, "#c9c3e0")
+    center_text(700, str(life_path_num), f_big, "#f2c14e")
+    center_text(990, "ваша накшатра", f_label, "#c9c3e0")
+    center_text(1040, nakshatra, f_value, "#ffffff")
+    center_text(1120, "ведическая лунная стоянка", f_sub, "#8a80b8")
+    draw.line([(W // 2 - 150, 1230), (W // 2 + 150, 1230)], fill="#5a4f8c", width=2)
+    center_text(1750, "@nebosvod_astro_bot", f_tag, "#c9c3e0")
+    center_text(1800, "узнайте свою карту", f_tag, "#8a80b8")
+
+    img.save(out_path)
 
 
 async def send_menu(context, chat_id):
@@ -533,6 +747,20 @@ async def deliver_chart(update: Update, context: ContextTypes.DEFAULT_TYPE, chat
         1.7,
     )
 
+    now_jd = ac.to_jd(date.today().year, date.today().month, date.today().day, 0, 0)
+    timeline = ac.dasha_timeline(chart["birth_jd"], moon_sid_lon, years_ahead=130)
+    planet, start_jd, end_jd = ac.current_dasha(timeline, now_jd)
+    current_idx = timeline.index((planet, start_jd, end_jd))
+    next_planet, next_start_jd, _ = timeline[current_idx + 1]
+    await send_bot(
+        context, chat_id,
+        f"И ещё один ведический слой: даша, система больших периодов жизни, у каждой планеты свой, от шести до двадцати лет, "
+        f"и сейчас у вас идёт период {ct.DASHA_LABEL[planet]}, с {ac.jd_to_date_label(start_jd)} по {ac.jd_to_date_label(end_jd)}.\n\n"
+        f"{ct.DASHA_TEXTS[planet]}\n\n"
+        f"Следующий период {ct.DASHA_LABEL[next_planet]} начнётся {ac.jd_to_date_label(next_start_jd)}.",
+        2.2,
+    )
+
     await send_menu(context, chat_id)
     return ConversationHandler.END
 
@@ -550,7 +778,7 @@ async def sphere(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await context.bot.send_message(chat_id=chat_id, text="Сначала пройдите разбор заново: /start")
         return
 
-    await send_bot(context, chat_id, f"Смотрю, что карта говорит про {s['title'].lower()}…", 0.7)
+    await send_bot(context, chat_id, f"Смотрю, что карта говорит про {ct.SPHERE_ACCUSATIVE[sphere_key]}…", 0.7)
 
     planet_sign = chart[s["planet_key"]]["sign"]
     if chart["has_time"] and chart["rising"]:
@@ -583,11 +811,13 @@ async def sphere(update: Update, context: ContextTypes.DEFAULT_TYPE):
             for h in ingress_hits[:5]:
                 bank = ct.PLANET_SPHERE_ACTION if h["variant"] == 0 else ct.PLANET_SPHERE_ACTION_V2
                 action = bank[h["planet_key"]][sphere_key]
+                weight_bank = ct.PLANET_WEIGHT if h["variant"] == 0 else ct.PLANET_WEIGHT_V2
                 if h["retrograde"]:
                     lead = f"{ct.PLANET_LABEL[h['planet_key']]} сейчас здесь, но движется попятно"
                 else:
-                    lead = ct.PLANET_REASON[h["planet_key"]]
-                lines.append(f"\n📅 {h['date_label']}. {lead}: {action}. {ct.PLANET_WEIGHT[h['planet_key']]}")
+                    reason_bank = ct.PLANET_REASON if h["variant"] == 0 else ct.PLANET_REASON_V2
+                    lead = reason_bank[h["planet_key"]]
+                lines.append(f"\n📅 {h['date_label']}. {lead}: {action}. {weight_bank[h['planet_key']]}")
             await send_bot(context, chat_id, "\n".join(lines), 1.6)
         else:
             await send_bot(
@@ -602,6 +832,13 @@ async def sphere(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"но кое-что скажу и так. {s['planet_texts'][planet_sign]}",
             1.2,
         )
+
+    moon_sid_lon = ac.sidereal_lon(ac.point_lon(chart["moon"]), chart["birth_jd"])
+    now_jd_dasha = ac.to_jd(date.today().year, date.today().month, date.today().day, 0, 0)
+    dasha_timeline = ac.dasha_timeline(chart["birth_jd"], moon_sid_lon, years_ahead=130)
+    current_planet, _, _ = ac.current_dasha(dasha_timeline, now_jd_dasha)
+    await send_bot(context, chat_id, ct.SPHERE_DASHA_TEXTS[sphere_key][current_planet], 1.0)
+
     await send_menu(context, chat_id)
 
 
@@ -700,6 +937,16 @@ async def unlived(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await send_bot(context, chat_id, "✨ " + ct.RETRO_NARRATIVES[planet_key], 2.2)
             break
 
+    moon_sid_lon = ac.sidereal_lon(ac.point_lon(chart["moon"]), birth_jd)
+    dasha_tl = ac.dasha_timeline(birth_jd, moon_sid_lon, years_ahead=130)
+    current_planet, _, _ = ac.current_dasha(dasha_tl, now)
+    supports = ct.DASHA_SUPPORTS_RETURN[current_planet]
+    await send_bot(
+        context, chat_id,
+        ct.DASHA_RETURN_TEXT[supports].format(planet=ct.DASHA_LABEL[current_planet]),
+        1.3,
+    )
+
     await send_menu(context, chat_id)
 
 
@@ -733,6 +980,8 @@ async def forecast(update: Update, context: ContextTypes.DEFAULT_TYPE):
             1.2,
         )
     else:
+        moon_sid_lon = ac.sidereal_lon(ac.point_lon(chart["moon"]), chart["birth_jd"])
+        dasha_tl = ac.dasha_timeline(chart["birth_jd"], moon_sid_lon, years_ahead=130)
         for h in hits[:6]:
             text = ct.TRANSIT_TEXTS[h["planet_key"]][h["point_key"]][h["aspect_key"]]
             text = text[0].upper() + text[1:]
@@ -742,16 +991,33 @@ async def forecast(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 info = ct.HOUSE_INFO[house_num]
                 house_note = (f" Сейчас {ct.PLANET_LABEL[h['planet_key']]} идёт через ваш {info['label']}, "
                               f"и заметнее всего это отразится на {info['tie']}.")
+            event_jd = now + h["day_offset"]
+            event_planet, _, _ = ac.current_dasha(dasha_tl, event_jd)
+            dasha_note = f" К этой дате у вас будет идти период {ct.DASHA_LABEL[event_planet]}."
             await send_bot(
                 context, chat_id,
                 f"{h['date_label']}: {ct.PLANET_LABEL[h['planet_key']]} образует {ct.ASPECT_ACCUSATIVE[h['aspect_key']]} "
-                f"с {ct.NATAL_INSTRUMENTAL[h['point_key']]}. {text}{house_note}",
+                f"с {ct.NATAL_INSTRUMENTAL[h['point_key']]}. {text}{house_note}{dasha_note}",
                 0.95,
             )
         if len(hits) > 6:
             await send_bot(context, chat_id,
                             f"Это первые 6 дат из {len(hits)} найденных на два года вперёд, остальные дальше по времени.",
                             0.7)
+
+    natal_points = {"sun": ac.point_lon(chart["sun"]), "moon": ac.point_lon(chart["moon"])}
+    if chart["has_time"] and chart["rising"]:
+        natal_points["rising"] = ac.point_lon(chart["rising"])
+    eclipse_hits = ac.find_personal_eclipses(natal_points, now)
+    if eclipse_hits:
+        h = eclipse_hits[0]
+        await send_bot(
+            context, chat_id,
+            f"🌑 И ещё, отдельно: {ac.jd_to_date_label(h['jd'])} затмение, одно из самых сильных, редких событий в астрологии вообще, "
+            f"ложится почти точно на вашу личную точку карты, с орбисом {h['orb']}°.\n\n"
+            f"{ct.ECLIPSE_TEXTS[h['type'] + '_' + h['point']]}",
+            2.0,
+        )
 
     await send_menu(context, chat_id)
 
@@ -889,6 +1155,9 @@ def main():
     application.add_handler(CallbackQueryHandler(sphere, pattern=f"^{SPHERE_CB_PREFIX}"))
     application.add_handler(CallbackQueryHandler(unlived, pattern=f"^{UNLIVED_CB}$"))
     application.add_handler(CallbackQueryHandler(numerology, pattern=f"^{NUMEROLOGY_CB}$"))
+    application.add_handler(CallbackQueryHandler(tomorrow_menu, pattern=f"^{TOMORROW_CB}$"))
+    application.add_handler(CallbackQueryHandler(tomorrow_western, pattern=f"^{TOMORROW_WESTERN_CB}$"))
+    application.add_handler(CallbackQueryHandler(tomorrow_choghadiya, pattern=f"^{TOMORROW_CHOGHADIYA_CB}$"))
     application.add_handler(CommandHandler("broadcast", broadcast))
     application.add_handler(CommandHandler("stats", stats))
 
