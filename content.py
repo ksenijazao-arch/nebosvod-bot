@@ -738,7 +738,7 @@ ASPECT_HEADLINE = {
     "trine": ("85%", "💚 Гармония"),
     "opposition": ("70%", "🧲 Магнетизм"),
     "square": ("55%", "⚡ Напряжение"),
-    "none": ("25%", "⚪ Фоново"),
+    "none": ("", "⚪ Нет точного контакта"),
 }
 
 
@@ -907,4 +907,6 @@ CHOGHADIYA_TEXTS = {
 }
 
 CHOGHADIYA_GOOD = {"amrit": True, "shubh": True, "labh": True, "chal": True, "rog": False, "kaal": False, "udveg": False}
-CHOGHADIYA_LABEL = {"amrit": "Амрит ✅", "shubh": "Шубх ✅", "labh": "Лабх ✅", "chal": "Чал 🟡", "rog": "Рог ❌", "kaal": "Каал ❌", "udveg": "Удвег ❌"}
+CHOGHADIYA_LABEL = {"amrit": "Амрит ✅ (бессмертие)", "shubh": "Шубх ✅ (удача)", "labh": "Лабх ✅ (выгода)",
+                     "chal": "Чал 🟡 (движение)", "rog": "Рог ❌ (болезнь)", "kaal": "Каал ❌ (промедление)",
+                     "udveg": "Удвег ❌ (тревога)"}

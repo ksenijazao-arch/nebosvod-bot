@@ -123,7 +123,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
                     "Здравствуйте! Я «Небосвод», бот для индивидуального разбора натальной карты.", 0.6)
     await send_bot(
         context, chat_id,
-        "Сначала один короткий, но важный вопрос.",
+        "Для начала давайте познакомимся. Подскажите, как к вам обращаться, это поможет мне говорить с вами живо, не сухим переводом.",
         0.6, reply_markup=gender_keyboard(),
     )
     return ASK_GENDER
@@ -331,7 +331,7 @@ async def deliver_synastry(update: Update, context: ContextTypes.DEFAULT_TYPE, c
 
     def headline(aspect):
         percent, tag = ct.ASPECT_HEADLINE[aspect]
-        return f"{tag}: {percent}"
+        return f"{tag}: {percent}" if percent else tag
 
     for key_a, key_b, label in ct.SYNASTRY_PAIRS:
         aspect = ac.natal_aspect(ac.point_lon(chart[key_a]), ac.point_lon(partner_chart[key_b]))
@@ -447,7 +447,7 @@ async def numerology(update: Update, context: ContextTypes.DEFAULT_TYPE):
         with open(card_path, "rb") as f:
             await context.bot.send_photo(
                 chat_id=chat_id, photo=f,
-                caption="Карточка на сохранение, можно переслать в сторис.",
+                caption="Сохраните эту карточку и поставьте на заставку телефона, пусть будет вашим маленьким талисманом.",
             )
         os.remove(card_path)
 
@@ -527,6 +527,9 @@ async def tomorrow_western(update: Update, context: ContextTypes.DEFAULT_TYPE):
         lines.append(f"{_fmt_hm(h['start'])}–{_fmt_hm(h['end'])} {ct.PLANET_LABEL[h['planet']]}")
     await send_bot(context, chat_id, "\n".join(lines), 1.3)
 
+    switch_kb = InlineKeyboardMarkup([[InlineKeyboardButton("🕉️ А что скажет чогхадия?", callback_data=TOMORROW_CHOGHADIYA_CB)]])
+    await context.bot.send_message(chat_id=chat_id, text="Хотите посмотреть и вторую систему на тот же день?", reply_markup=switch_kb)
+
     await send_menu(context, chat_id)
 
 
@@ -564,6 +567,10 @@ async def tomorrow_choghadiya(update: Update, context: ContextTypes.DEFAULT_TYPE
     for s in slots[8:]:
         lines.append(f"{_fmt_hm(s['start'])}–{_fmt_hm(s['end'])} {ct.CHOGHADIYA_LABEL[s['name']]}")
     await send_bot(context, chat_id, "\n".join(lines), 1.3)
+
+    switch_kb = InlineKeyboardMarkup([[InlineKeyboardButton("⏰ А что скажут западные часы?", callback_data=TOMORROW_WESTERN_CB)]])
+    await context.bot.send_message(chat_id=chat_id, text="Хотите посмотреть и вторую систему на тот же день?", reply_markup=switch_kb)
+
     await send_menu(context, chat_id)
 
 
@@ -638,7 +645,18 @@ def make_share_card(nakshatra, life_path_num, out_path):
     img.save(out_path)
 
 
+SHOW_MENU_CB = "show_menu"
+
+
 async def send_menu(context, chat_id):
+    keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("📋 Меню", callback_data=SHOW_MENU_CB)]])
+    await context.bot.send_message(chat_id=chat_id, text="Готово. Что дальше?", reply_markup=keyboard)
+
+
+async def send_full_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    chat_id = query.message.chat_id
     avatar_path = os.path.join(os.path.dirname(__file__), "avatar.png")
     if os.path.exists(avatar_path):
         with open(avatar_path, "rb") as f:
@@ -1158,6 +1176,7 @@ def main():
     application.add_handler(CallbackQueryHandler(tomorrow_menu, pattern=f"^{TOMORROW_CB}$"))
     application.add_handler(CallbackQueryHandler(tomorrow_western, pattern=f"^{TOMORROW_WESTERN_CB}$"))
     application.add_handler(CallbackQueryHandler(tomorrow_choghadiya, pattern=f"^{TOMORROW_CHOGHADIYA_CB}$"))
+    application.add_handler(CallbackQueryHandler(send_full_menu, pattern=f"^{SHOW_MENU_CB}$"))
     application.add_handler(CommandHandler("broadcast", broadcast))
     application.add_handler(CommandHandler("stats", stats))
 
