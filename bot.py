@@ -200,7 +200,7 @@ async def payment_gate(chat_id: int, context: ContextTypes.DEFAULT_TYPE, feature
     ])
     await context.bot.send_message(
         chat_id=chat_id,
-        text=f"Эта часть платная, {amount} ₽. Оплатите по кнопке ниже, а после нажмите «Я оплатил(а)», я проверю и сразу продолжу.",
+        text=f"{ct.FEATURE_PITCH[feature]}\n\nЭта часть платная, {amount} ₽. Оплатите по кнопке ниже, а после нажмите «Я оплатил(а)», я проверю и сразу продолжу.",
         reply_markup=keyboard,
     )
     return False
