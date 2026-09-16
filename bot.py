@@ -519,12 +519,21 @@ async def tomorrow_western(update: Update, context: ContextTypes.DEFAULT_TYPE):
         1.8,
     )
 
-    lines = ["🔭 Полная сетка часов, если нужна точность:\n\nДнём:"]
+    lines = [
+        "🔭 Полная сетка часов, если нужна точность. ✅ благоприятный час, 🟡 нейтральный, ⚠️ стоит быть аккуратнее:",
+        "\nДнём:",
+    ]
     for h in hours[:12]:
-        lines.append(f"{_fmt_hm(h['start'])}–{_fmt_hm(h['end'])} {ct.PLANET_LABEL[h['planet']]}")
+        lines.append(
+            f"{_fmt_hm(h['start'])}–{_fmt_hm(h['end'])} {ct.PLANET_HOUR_MARK[h['planet']]} "
+            f"{ct.PLANET_LABEL[h['planet']]} ({ct.PLANET_HOUR_GLOSS[h['planet']]})"
+        )
     lines.append("\nНочью:")
     for h in hours[12:]:
-        lines.append(f"{_fmt_hm(h['start'])}–{_fmt_hm(h['end'])} {ct.PLANET_LABEL[h['planet']]}")
+        lines.append(
+            f"{_fmt_hm(h['start'])}–{_fmt_hm(h['end'])} {ct.PLANET_HOUR_MARK[h['planet']]} "
+            f"{ct.PLANET_LABEL[h['planet']]} ({ct.PLANET_HOUR_GLOSS[h['planet']]})"
+        )
     await send_bot(context, chat_id, "\n".join(lines), 1.3)
 
     switch_kb = InlineKeyboardMarkup([[InlineKeyboardButton("🕉️ А что скажет чогхадия?", callback_data=TOMORROW_CHOGHADIYA_CB)]])
@@ -560,7 +569,10 @@ async def tomorrow_choghadiya(update: Update, context: ContextTypes.DEFAULT_TYPE
         1.8,
     )
 
-    lines = ["🔭 Полная сетка на день, если нужна точность:\n\nДнём:"]
+    lines = [
+        "🔭 Полная сетка на день, если нужна точность. ✅ благоприятная чогхадия, 🟡 нейтральная, ❌ лучше переждать:",
+        "\nДнём:",
+    ]
     for s in slots[:8]:
         lines.append(f"{_fmt_hm(s['start'])}–{_fmt_hm(s['end'])} {ct.CHOGHADIYA_LABEL[s['name']]}")
     lines.append("\nНочью:")
