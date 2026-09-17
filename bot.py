@@ -205,21 +205,25 @@ async def yookassa_check_payment(payment_id):
 
 async def payment_gate(chat_id: int, context: ContextTypes.DEFAULT_TYPE, feature: str) -> bool:
     """Проверяет доступ к платной функции. Если уже оплачено и действует,
-    возвращает True, вызывающий код продолжает как обычно. Если нет, а
-    почты для чека ещё нет, сначала спрашивает её и ждёт следующим
-    сообщением. Как только почта есть, сама создаёт платёж в ЮKassa,
-    присылает ссылку и кнопку подтверждения. В обоих случаях, кроме
-    успешного доступа, возвращает False, вызывающий код должен
-    остановиться."""
+    возвращает True, вызывающий код продолжает как обычно. Иначе сначала
+    показывает, что человек получит (один раз за попытку, не повторяет
+    при возврате после почты), затем спрашивает почту, если её ещё нет, и
+    только потом создаёт платёж в ЮKassa. В обоих случаях, кроме успешного
+    доступа, возвращает False, вызывающий код должен остановиться."""
     if db_has_access(chat_id, feature):
         return True
+
+    pitch_flag = f"pitch_shown_{feature}"
+    if not context.user_data.get(pitch_flag):
+        context.user_data[pitch_flag] = True
+        await context.bot.send_message(chat_id=chat_id, text=ct.FEATURE_PITCH[feature])
 
     email = context.user_data.get("email") or db_get_email(chat_id)
     if not email:
         context.user_data["awaiting_email_for"] = feature
         await context.bot.send_message(
             chat_id=chat_id,
-            text="Перед оплатой нужна почта, на неё ЮKassa пришлёт кассовый чек, это требование закона, не моя прихоть. Ответьте на это сообщение своей почтой.",
+            text="Одна короткая деталь перед оплатой: напишите свою почту, чтобы вы получили подтверждение и чек.",
             reply_markup=ForceReply(input_field_placeholder="ваша@почта.ру"),
         )
         return False
@@ -241,7 +245,7 @@ async def payment_gate(chat_id: int, context: ContextTypes.DEFAULT_TYPE, feature
     ])
     await context.bot.send_message(
         chat_id=chat_id,
-        text=f"{ct.FEATURE_PITCH[feature]}\n\nЭта часть платная, {amount} ₽. Оплатите по кнопке ниже, а после нажмите «Я оплатил(а)», я проверю и сразу продолжу.",
+        text=f"Эта часть платная, {amount} ₽. Оплатите по кнопке ниже, а после нажмите «Я оплатил(а)», я проверю и сразу продолжу.",
         reply_markup=keyboard,
     )
     return False
