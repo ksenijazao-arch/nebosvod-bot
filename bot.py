@@ -743,7 +743,7 @@ async def _numerology_core(chat_id: int, context: ContextTypes.DEFAULT_TYPE):
     current_pin = next(p for p in pins if p["start_age"] <= age and (p["end_age"] is None or age < p["end_age"]))
     await send_bot(context, chat_id, ct.PINNACLE_TEXTS[str(current_pin["number"])], 1.4)
 
-    card_path = os.path.join(os.path.dirname(__file__), "numbers", f"{number}.png")
+    card_path = os.path.join(os.path.dirname(__file__), f"{number}.png")
     if os.path.exists(card_path):
         with open(card_path, "rb") as f:
             await context.bot.send_photo(
