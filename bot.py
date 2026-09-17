@@ -833,7 +833,7 @@ async def tomorrow_western(update: Update, context: ContextTypes.DEFAULT_TYPE):
     date_label = tomorrow.strftime("%d.%m.%Y")
     await send_bot(
         context, chat_id,
-        f"⏰ Завтра, {date_label}, по западным часам:\n\n"
+        f"⏰ Завтра, {date_label}, по западным часам (время местное, по вашему городу рождения):\n\n"
         f"✅ Лучшее окно: {_fmt_hm(best['start'])}–{_fmt_hm(best['end'])}, {ct.PLANET_LABEL[best['planet']].lower()}. "
         f"{ct.PLANET_HOUR_TEXTS[best['planet']]}\n\n"
         f"⚠️ Стоит быть осторожнее: {_fmt_hm(worst['start'])}–{_fmt_hm(worst['end'])}, {ct.PLANET_LABEL[worst['planet']].lower()}. "
@@ -883,7 +883,7 @@ async def tomorrow_choghadiya(update: Update, context: ContextTypes.DEFAULT_TYPE
     date_label = tomorrow.strftime("%d.%m.%Y")
     await send_bot(
         context, chat_id,
-        f"🕉️ Завтра, {date_label}, по чогхадии:\n\n"
+        f"🕉️ Завтра, {date_label}, по чогхадии (время местное, по вашему городу рождения):\n\n"
         f"✅ Лучшее окно: {_fmt_hm(best['start'])}–{_fmt_hm(best['end'])}, {ct.CHOGHADIYA_LABEL[best['name']]}. "
         f"{ct.CHOGHADIYA_TEXTS[best['name']]}\n\n"
         f"⚠️ Стоит быть осторожнее: {_fmt_hm(worst['start'])}–{_fmt_hm(worst['end'])}, {ct.CHOGHADIYA_LABEL[worst['name']]}. "
@@ -1358,13 +1358,27 @@ class _HealthHandler(BaseHTTPRequestHandler):
         pass  # не засоряем логи проверками на живость
 
 
+def _run_health_server(server):
+    try:
+        server.serve_forever()
+    except Exception:
+        logging.exception("health-сервер упал и больше не отвечает на проверки Render/UptimeRobot")
+
+
 def start_health_server():
     """Render (и похожие площадки) ждут, что сервис слушает порт.
     Сам бот работает через постоянный опрос Telegram и порт не использует,
-    так что здесь просто открываем его для проверки, что сервис жив."""
+    так что здесь просто открываем его для проверки, что сервис жив.
+    Ошибку в потоке теперь обязательно логируем, раньше поток мог тихо
+    упасть, а основной бот продолжал бы работать как ни в чём не бывало,
+    снаружи же Render показывал бы 502, будто всё мертво."""
     port = int(os.environ.get("PORT", "8080"))
-    server = HTTPServer(("0.0.0.0", port), _HealthHandler)
-    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        server = HTTPServer(("0.0.0.0", port), _HealthHandler)
+    except OSError:
+        logging.exception("health-сервер не смог занять порт %s, вероятно порт уже занят", port)
+        return
+    threading.Thread(target=_run_health_server, args=(server,), daemon=True).start()
     log.info("health-сервер слушает порт %s", port)
 
 
