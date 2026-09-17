@@ -28,7 +28,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 import psycopg2
 from PIL import Image, ImageDraw, ImageFont
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, ReplyKeyboardRemove, Update
+from telegram import ForceReply, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, ReplyKeyboardRemove, Update
 from telegram.ext import (
     Application, ApplicationHandlerStop, CallbackQueryHandler, CommandHandler, ContextTypes,
     ConversationHandler, MessageHandler, filters,
@@ -219,7 +219,8 @@ async def payment_gate(chat_id: int, context: ContextTypes.DEFAULT_TYPE, feature
         context.user_data["awaiting_email_for"] = feature
         await context.bot.send_message(
             chat_id=chat_id,
-            text="Перед оплатой нужна почта, на неё ЮKassa пришлёт кассовый чек, это требование закона, не моя прихоть. Пришлите её одним сообщением.",
+            text="Перед оплатой нужна почта, на неё ЮKassa пришлёт кассовый чек, это требование закона, не моя прихоть. Ответьте на это сообщение своей почтой.",
+            reply_markup=ForceReply(input_field_placeholder="ваша@почта.ру"),
         )
         return False
     context.user_data["email"] = email
