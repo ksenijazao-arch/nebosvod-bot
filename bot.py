@@ -253,32 +253,49 @@ async def payment_gate(chat_id: int, context: ContextTypes.DEFAULT_TYPE, feature
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 
-async def email_intercept(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Стоит перед остальными обработчиками (ранняя группа). Если бот
-    сейчас ждёт почту для чека, забирает это сообщение себе и продолжает
-    платёж. Если не ждёт, ничего не делает и не мешает остальным
-    обработчикам разбирать это же сообщение как обычно."""
-    feature = context.user_data.get("awaiting_email_for")
-    if not feature:
-        return
+async def text_intercept(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Единый ранний перехватчик для любого текста, который не должен идти
+    в обычные диалоги: кнопки постоянного меню, ожидание вопроса в
+    поддержку, ожидание почты перед оплатой. Собран в одну функцию
+    намеренно: несколько отдельных обработчиков с широким фильтром в
+    одной и той же группе конфликтуют между собой, движок отдаёт
+    сообщение только первому подходящему и до остальных не доходит."""
     text = (update.message.text or "").strip()
-    if text in MENU_BUTTON_TEXTS:
-        return
-    if not EMAIL_RE.match(text):
-        await update.message.reply_text("Это не похоже на почту, пришлите, пожалуйста, в формате имя@почта.ру.")
-        raise ApplicationHandlerStop
     chat_id = update.effective_chat.id
-    db_set_email(chat_id, text)
-    context.user_data["email"] = text
-    del context.user_data["awaiting_email_for"]
-    await update.message.reply_text("Спасибо, записала. Продолжаю с оплатой.")
-    if feature == "compat":
-        await _start_compat_core(chat_id, context)
-    elif feature == "numerology":
-        await _numerology_core(chat_id, context)
-    elif feature == "tomorrow":
-        await _tomorrow_menu_core(chat_id, context)
-    raise ApplicationHandlerStop
+
+    if text == "📋 Меню":
+        await send_full_menu(update, context)
+        raise ApplicationHandlerStop
+    if text == "🆘 Поддержка":
+        await support_start(update, context)
+        raise ApplicationHandlerStop
+
+    if context.user_data.get("awaiting_support_message"):
+        del context.user_data["awaiting_support_message"]
+        if ADMIN_CHAT_ID:
+            try:
+                await context.bot.send_message(chat_id=int(ADMIN_CHAT_ID), text=f"🆘 Вопрос от пользователя {chat_id}:\n\n{text}")
+            except Exception:
+                logging.exception("Не удалось переслать вопрос в поддержку")
+        await update.message.reply_text("Спасибо, вопрос передала, отвечу как можно быстрее.")
+        raise ApplicationHandlerStop
+
+    feature = context.user_data.get("awaiting_email_for")
+    if feature:
+        if not EMAIL_RE.match(text):
+            await update.message.reply_text("Это не похоже на почту, пришлите, пожалуйста, в формате имя@почта.ру.")
+            raise ApplicationHandlerStop
+        db_set_email(chat_id, text)
+        context.user_data["email"] = text
+        del context.user_data["awaiting_email_for"]
+        await update.message.reply_text("Спасибо, записала. Продолжаю с оплатой.")
+        if feature == "compat":
+            await _start_compat_core(chat_id, context)
+        elif feature == "numerology":
+            await _numerology_core(chat_id, context)
+        elif feature == "tomorrow":
+            await _tomorrow_menu_core(chat_id, context)
+        raise ApplicationHandlerStop
 
 
 async def payment_confirm_compat(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -403,7 +420,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
                     "Здравствуйте! Я «Небосвод», бот для индивидуального разбора натальной карты.", 0.6)
     await send_bot(
         context, chat_id,
-        "Для начала давайте познакомимся. Подскажите, как к вам обращаться, это поможет мне говорить с вами живо, не сухим переводом.",
+        "Для начала один короткий вопрос, он важен для того, как будет звучать весь ваш разбор дальше.",
         0.6, reply_markup=gender_keyboard(),
     )
     return ASK_GENDER
@@ -748,7 +765,7 @@ async def _numerology_core(chat_id: int, context: ContextTypes.DEFAULT_TYPE):
         with open(card_path, "rb") as f:
             await context.bot.send_photo(
                 chat_id=chat_id, photo=f,
-                caption="Сохраните эту карточку и поставьте на заставку телефона, пусть будет вашим маленьким талисманом.",
+                caption="Сохраните эту карточку и поставьте на заставку телефона. Видеть своё число каждый день, простая практика: она помогает держать в уме главное направление, особенно когда строите планы вперёд.",
             )
 
     await send_menu(context, chat_id)
@@ -937,23 +954,6 @@ async def support_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Опишите, пожалуйста, что случилось или что хотели спросить, одним сообщением, отвечу как можно быстрее.",
         reply_markup=ForceReply(input_field_placeholder="ваш вопрос"),
     )
-
-
-async def support_message_intercept(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.user_data.get("awaiting_support_message"):
-        return
-    text = (update.message.text or "").strip()
-    if text in MENU_BUTTON_TEXTS:
-        return
-    del context.user_data["awaiting_support_message"]
-    chat_id = update.effective_chat.id
-    if ADMIN_CHAT_ID:
-        try:
-            await context.bot.send_message(chat_id=int(ADMIN_CHAT_ID), text=f"🆘 Вопрос от пользователя {chat_id}:\n\n{text}")
-        except Exception:
-            logging.exception("Не удалось переслать вопрос в поддержку")
-    await update.message.reply_text("Спасибо, вопрос передала, отвечу как можно быстрее.")
-    raise ApplicationHandlerStop
 
 
 async def deliver_chart(update: Update, context: ContextTypes.DEFAULT_TYPE, chat_id: int) -> int:
@@ -1441,7 +1441,7 @@ def main():
         fallbacks=[CommandHandler("cancel", cancel), CommandHandler("start", start)],
     )
 
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, email_intercept), group=-1)
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_intercept), group=-1)
     application.add_handler(conv)
 
     compat_conv = ConversationHandler(
@@ -1471,9 +1471,6 @@ def main():
     application.add_handler(CallbackQueryHandler(tomorrow_menu, pattern=f"^{TOMORROW_CB}$"))
     application.add_handler(CallbackQueryHandler(tomorrow_western, pattern=f"^{TOMORROW_WESTERN_CB}$"))
     application.add_handler(CallbackQueryHandler(tomorrow_choghadiya, pattern=f"^{TOMORROW_CHOGHADIYA_CB}$"))
-    application.add_handler(MessageHandler(filters.Text(["📋 Меню"]), send_full_menu), group=-1)
-    application.add_handler(MessageHandler(filters.Text(["🆘 Поддержка"]), support_start), group=-1)
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, support_message_intercept), group=-1)
     application.add_handler(CallbackQueryHandler(payment_confirm, pattern="^paycheck:(numerology|tomorrow)$"))
     application.add_handler(CommandHandler("broadcast", broadcast))
     application.add_handler(CommandHandler("stats", stats))
