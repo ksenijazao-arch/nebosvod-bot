@@ -26,7 +26,6 @@ from datetime import date, timedelta
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import psycopg2
-from PIL import Image, ImageDraw, ImageFont
 
 from telegram import ForceReply, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, ReplyKeyboardRemove, Update
 from telegram.ext import (
@@ -263,6 +262,8 @@ async def email_intercept(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not feature:
         return
     text = (update.message.text or "").strip()
+    if text in MENU_BUTTON_TEXTS:
+        return
     if not EMAIL_RE.match(text):
         await update.message.reply_text("Это не похоже на почту, пришлите, пожалуйста, в формате имя@почта.ру.")
         raise ApplicationHandlerStop
@@ -728,17 +729,27 @@ async def _numerology_core(chat_id: int, context: ContextTypes.DEFAULT_TYPE):
             1.8,
         )
 
-    if chart:
-        moon_sid_lon_card = ac.sidereal_lon(ac.point_lon(chart["moon"]), chart["birth_jd"])
-        nakshatra_card = ac.nakshatra_of(moon_sid_lon_card)["name"]
-        card_path = f"/tmp/card_{chat_id}.png"
-        make_share_card(nakshatra_card, number, card_path)
+    today = date.today()
+    age = today.year - year - (1 if (today.month, today.day) < (month, day) else 0)
+    pins = ac.pinnacles(day, month, year)
+    lines = ["И ещё один слой, числа вершин, четыре периода жизни, у каждого своё число и свои годы:\n"]
+    for i, p in enumerate(pins, 1):
+        end_label = f"до {p['end_age']} лет" if p["end_age"] is not None else "до конца жизни"
+        is_current = p["start_age"] <= age and (p["end_age"] is None or age < p["end_age"])
+        marker = " 👈 сейчас у вас этот период" if is_current else ""
+        lines.append(f"{i}. Число {p['number']}, с {p['start_age']} {end_label}{marker}")
+    await send_bot(context, chat_id, "\n".join(lines), 1.6)
+
+    current_pin = next(p for p in pins if p["start_age"] <= age and (p["end_age"] is None or age < p["end_age"]))
+    await send_bot(context, chat_id, ct.PINNACLE_TEXTS[str(current_pin["number"])], 1.4)
+
+    card_path = os.path.join(os.path.dirname(__file__), "numbers", f"{number}.png")
+    if os.path.exists(card_path):
         with open(card_path, "rb") as f:
             await context.bot.send_photo(
                 chat_id=chat_id, photo=f,
                 caption="Сохраните эту карточку и поставьте на заставку телефона, пусть будет вашим маленьким талисманом.",
             )
-        os.remove(card_path)
 
     await send_menu(context, chat_id)
 
@@ -899,76 +910,50 @@ def main_menu_keyboard():
     ])
 
 
-FONTS_DIR = os.path.join(os.path.dirname(__file__), "fonts")
 
 
-def make_share_card(nakshatra, life_path_num, out_path):
-    """Собирает карточку 1080x1920 в стиле бота (тёмный индиго-фон, золотой
-    полумесяц, звёзды) с накшатрой и числом жизненного пути, для пересылки
-    в сторис. Шрифты идут своими файлами, не полагается на системные."""
-    W, H = 1080, 1920
-    img = Image.new("RGB", (W, H), "#0d0a1a")
-    draw = ImageDraw.Draw(img)
-    top, bottom = (13, 10, 26), (40, 24, 74)
-    for y in range(H):
-        t = y / H
-        draw.line([(0, y), (W, y)], fill=tuple(int(top[i] + (bottom[i] - top[i]) * t) for i in range(3)))
-
-    random.seed(hash((nakshatra, life_path_num)) % 10000)
-    for _ in range(150):
-        x, y = random.randint(0, W), random.randint(0, H)
-        r = random.choice([1, 1, 1, 2, 2, 3])
-        draw.ellipse([x - r, y - r, x + r, y + r], fill=(255, 255, 255))
-    random.seed()
-
-    moon_cx, moon_cy, moon_r = W // 2, 260, 110
-    draw.ellipse([moon_cx - moon_r, moon_cy - moon_r, moon_cx + moon_r, moon_cy + moon_r], fill="#f2c14e")
-    draw.ellipse([moon_cx - moon_r + 46, moon_cy - moon_r, moon_cx + moon_r + 46, moon_cy + moon_r],
-                 fill=(top[0], top[1] + 7, top[2] + 20))
-
-    f_label = ImageFont.truetype(os.path.join(FONTS_DIR, "DejaVuSans.ttf"), 34)
-    f_value = ImageFont.truetype(os.path.join(FONTS_DIR, "DejaVuSans-Bold.ttf"), 58)
-    f_big = ImageFont.truetype(os.path.join(FONTS_DIR, "DejaVuSans-Bold.ttf"), 230)
-    f_brand = ImageFont.truetype(os.path.join(FONTS_DIR, "DejaVuSans-Bold.ttf"), 40)
-    f_tag = ImageFont.truetype(os.path.join(FONTS_DIR, "DejaVuSans.ttf"), 30)
-    f_sub = ImageFont.truetype(os.path.join(FONTS_DIR, "DejaVuSans-Oblique.ttf"), 26)
-
-    def center_text(y, text, font, fill):
-        bbox = draw.textbbox((0, 0), text, font=font)
-        draw.text(((W - (bbox[2] - bbox[0])) // 2, y), text, font=font, fill=fill)
-
-    center_text(420, "НЕБОСВОД", f_brand, "#f2c14e")
-    draw.line([(W // 2 - 90, 485), (W // 2 + 90, 485)], fill="#5a4f8c", width=2)
-    center_text(650, "число жизненного пути", f_label, "#c9c3e0")
-    center_text(700, str(life_path_num), f_big, "#f2c14e")
-    center_text(990, "ваша накшатра", f_label, "#c9c3e0")
-    center_text(1040, nakshatra, f_value, "#ffffff")
-    center_text(1120, "ведическая лунная стоянка", f_sub, "#8a80b8")
-    draw.line([(W // 2 - 150, 1230), (W // 2 + 150, 1230)], fill="#5a4f8c", width=2)
-    center_text(1750, "@nebosvod_astro_bot", f_tag, "#c9c3e0")
-    center_text(1800, "узнайте свою карту", f_tag, "#8a80b8")
-
-    img.save(out_path)
-
-
-SHOW_MENU_CB = "show_menu"
+PERSISTENT_KEYBOARD = ReplyKeyboardMarkup([["📋 Меню", "🆘 Поддержка"]], resize_keyboard=True)
+MENU_BUTTON_TEXTS = ("📋 Меню", "🆘 Поддержка")
+ADMIN_CHAT_ID = os.environ.get("ADMIN_CHAT_ID", "")
 
 
 async def send_menu(context, chat_id):
-    keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("📋 Меню", callback_data=SHOW_MENU_CB)]])
-    await context.bot.send_message(chat_id=chat_id, text="Готово. Что дальше?", reply_markup=keyboard)
+    await context.bot.send_message(chat_id=chat_id, text="Готово.", reply_markup=PERSISTENT_KEYBOARD)
 
 
 async def send_full_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    chat_id = query.message.chat_id
+    chat_id = update.effective_chat.id
     avatar_path = os.path.join(os.path.dirname(__file__), "avatar.png")
     if os.path.exists(avatar_path):
         with open(avatar_path, "rb") as f:
             await context.bot.send_photo(chat_id=chat_id, photo=f, caption="Что дальше?", reply_markup=main_menu_keyboard())
     else:
         await context.bot.send_message(chat_id=chat_id, text="Что дальше?", reply_markup=main_menu_keyboard())
+
+
+async def support_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["awaiting_support_message"] = True
+    await update.message.reply_text(
+        "Опишите, пожалуйста, что случилось или что хотели спросить, одним сообщением, отвечу как можно быстрее.",
+        reply_markup=ForceReply(input_field_placeholder="ваш вопрос"),
+    )
+
+
+async def support_message_intercept(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.user_data.get("awaiting_support_message"):
+        return
+    text = (update.message.text or "").strip()
+    if text in MENU_BUTTON_TEXTS:
+        return
+    del context.user_data["awaiting_support_message"]
+    chat_id = update.effective_chat.id
+    if ADMIN_CHAT_ID:
+        try:
+            await context.bot.send_message(chat_id=int(ADMIN_CHAT_ID), text=f"🆘 Вопрос от пользователя {chat_id}:\n\n{text}")
+        except Exception:
+            logging.exception("Не удалось переслать вопрос в поддержку")
+    await update.message.reply_text("Спасибо, вопрос передала, отвечу как можно быстрее.")
+    raise ApplicationHandlerStop
 
 
 async def deliver_chart(update: Update, context: ContextTypes.DEFAULT_TYPE, chat_id: int) -> int:
@@ -1486,7 +1471,9 @@ def main():
     application.add_handler(CallbackQueryHandler(tomorrow_menu, pattern=f"^{TOMORROW_CB}$"))
     application.add_handler(CallbackQueryHandler(tomorrow_western, pattern=f"^{TOMORROW_WESTERN_CB}$"))
     application.add_handler(CallbackQueryHandler(tomorrow_choghadiya, pattern=f"^{TOMORROW_CHOGHADIYA_CB}$"))
-    application.add_handler(CallbackQueryHandler(send_full_menu, pattern=f"^{SHOW_MENU_CB}$"))
+    application.add_handler(MessageHandler(filters.Text(["📋 Меню"]), send_full_menu), group=-1)
+    application.add_handler(MessageHandler(filters.Text(["🆘 Поддержка"]), support_start), group=-1)
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, support_message_intercept), group=-1)
     application.add_handler(CallbackQueryHandler(payment_confirm, pattern="^paycheck:(numerology|tomorrow)$"))
     application.add_handler(CommandHandler("broadcast", broadcast))
     application.add_handler(CommandHandler("stats", stats))

@@ -281,6 +281,42 @@ def karmic_debt_number(day):
     return day if day in (13, 14, 16, 19) else None
 
 
+def _pinnacle_reduce(n):
+    while n > 9 and n not in (11, 22, 33):
+        n = sum(int(c) for c in str(n))
+    return n
+
+
+def pinnacles(day, month, year):
+    """Четыре вершины (pinnacle numbers): периоды жизни, у каждого своё
+    число и свои возрастные границы, посчитанные от даты рождения. Первая
+    вершина длится от рождения до возраста (36 минус базовое число
+    жизненного пути, мастер-числа берутся в свёрнутом виде только для этого
+    расчёта возраста), дальше по девять лет на вторую и третью, четвёртая
+    длится до конца жизни. Возвращает список из четырёх словарей с числом,
+    возрастом начала и возрастом конца (None для последней)."""
+    m = _pinnacle_reduce(month)
+    d = _pinnacle_reduce(day)
+    y = _pinnacle_reduce(sum(int(c) for c in str(year)))
+    p1 = _pinnacle_reduce(m + d)
+    p2 = _pinnacle_reduce(d + y)
+    p3 = _pinnacle_reduce(p1 + p2)
+    p4 = _pinnacle_reduce(m + y)
+
+    lp = life_path_number(day, month, year)
+    base = lp if lp not in (11, 22, 33) else {11: 2, 22: 4, 33: 6}[lp]
+    end1 = 36 - base
+    end2 = end1 + 9
+    end3 = end2 + 9
+
+    return [
+        {"number": p1, "start_age": 0, "end_age": end1},
+        {"number": p2, "start_age": end1, "end_age": end2},
+        {"number": p3, "start_age": end2, "end_age": end3},
+        {"number": p4, "start_age": end3, "end_age": None},
+    ]
+
+
 NAKSHATRAS = [
     "Ашвини", "Бхарани", "Криттика", "Рохини", "Мригашира", "Ардра", "Пунарвасу",
     "Пушья", "Ашлеша", "Магха", "Пурва Пхалгуни", "Уттара Пхалгуни", "Хаста",
