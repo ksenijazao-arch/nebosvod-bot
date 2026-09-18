@@ -30,7 +30,7 @@ import psycopg2
 from telegram import ForceReply, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, ReplyKeyboardRemove, Update
 from telegram.ext import (
     Application, ApplicationHandlerStop, CallbackQueryHandler, CommandHandler, ContextTypes,
-    ConversationHandler, MessageHandler, filters,
+    ConversationHandler, MessageHandler, TypeHandler, filters,
 )
 
 import astro_calc as ac
@@ -55,6 +55,9 @@ def db_init():
     with db_connect() as conn, conn.cursor() as cur:
         cur.execute("CREATE TABLE IF NOT EXISTS users (chat_id BIGINT PRIMARY KEY, first_seen TIMESTAMPTZ DEFAULT now())")
         cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS email TEXT")
+        cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS chart_json TEXT")
+        cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS date_str TEXT")
+        cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS gender TEXT")
         cur.execute("""
             CREATE TABLE IF NOT EXISTS payments (
                 id SERIAL PRIMARY KEY,
@@ -97,6 +100,43 @@ def db_get_email(chat_id):
 def db_set_email(chat_id, email):
     with db_connect() as conn, conn.cursor() as cur:
         cur.execute("UPDATE users SET email=%s WHERE chat_id=%s", (email, chat_id))
+        conn.commit()
+
+
+def db_save_chart(chat_id, chart, date_str, gender):
+    """Сохраняет готовый разбор в базу, чтобы он пережил перезапуск бота.
+    В память (user_data) это не пишет, это отдельная задача вызывающего
+    кода, здесь только постоянное хранилище."""
+    if not DATABASE_URL:
+        return
+    with db_connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            "UPDATE users SET chart_json=%s, date_str=%s, gender=%s WHERE chat_id=%s",
+            (json.dumps(chart), date_str, gender, chat_id),
+        )
+        conn.commit()
+
+
+def db_get_saved_chart(chat_id):
+    """Возвращает {'chart':.., 'date_str':.., 'gender':..} из базы, если
+    там есть сохранённый разбор для этого chat_id, иначе None."""
+    if not DATABASE_URL:
+        return None
+    with db_connect() as conn, conn.cursor() as cur:
+        cur.execute("SELECT chart_json, date_str, gender FROM users WHERE chat_id=%s", (chat_id,))
+        row = cur.fetchone()
+        if not row or not row[0]:
+            return None
+        return {"chart": json.loads(row[0]), "date_str": row[1], "gender": row[2]}
+
+
+def db_clear_chart(chat_id):
+    """Стирает сохранённый разбор в базе. Вызывается только когда человек
+    сам нажимает «Начать заново», не при обычной работе бота."""
+    if not DATABASE_URL:
+        return
+    with db_connect() as conn, conn.cursor() as cur:
+        cur.execute("UPDATE users SET chart_json=NULL, date_str=NULL, gender=NULL WHERE chat_id=%s", (chat_id,))
         conn.commit()
 
 
@@ -251,6 +291,25 @@ async def payment_gate(chat_id: int, context: ContextTypes.DEFAULT_TYPE, feature
 
 
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+
+async def restore_chart_if_needed(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Самый ранний обработчик из всех, стоит перед абсолютно всем
+    остальным и никогда не останавливает обработку. Если бот перезапустился
+    (память user_data чистая), но в базе для этого chat_id сохранён прошлый
+    разбор, тихо подставляет его обратно в user_data, чтобы человеку не
+    приходилось проходить дату, время и город заново только из-за того,
+    что сервер перезапустился, не потому что он сам этого просил."""
+    if context.user_data.get("chart"):
+        return
+    chat_id = update.effective_chat.id if update.effective_chat else None
+    if not chat_id:
+        return
+    saved = db_get_saved_chart(chat_id)
+    if saved:
+        context.user_data["chart"] = saved["chart"]
+        context.user_data["date_str"] = saved["date_str"]
+        context.user_data["gender"] = saved["gender"]
 
 
 async def text_intercept(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -412,9 +471,15 @@ def gender_keyboard():
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    context.user_data.clear()
     chat_id = update.effective_chat.id
     db_remember_user(chat_id)
+
+    if context.user_data.get("chart"):
+        await send_bot(context, chat_id, "С возвращением! Ваш разбор уже готов, не нужно проходить его заново.", 0.5)
+        await send_menu(context, chat_id)
+        return ConversationHandler.END
+
+    context.user_data.clear()
     avatar_path = os.path.join(os.path.dirname(__file__), "avatar.png")
     if os.path.exists(avatar_path):
         with open(avatar_path, "rb") as f:
@@ -968,6 +1033,7 @@ async def deliver_chart(update: Update, context: ContextTypes.DEFAULT_TYPE, chat
         context.user_data.get("city", ""),
     )
     context.user_data["chart"] = chart
+    db_save_chart(chat_id, chart, context.user_data["date_str"], context.user_data.get("gender"))
 
     await send_bot(context, chat_id, "Готово. Начнём с большой тройки.", 0.6)
 
@@ -1337,8 +1403,9 @@ async def forecast(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def restart_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
-    context.user_data.clear()
     chat_id = query.message.chat_id
+    context.user_data.clear()
+    db_clear_chart(chat_id)
     await send_bot(context, chat_id,
                     "Хорошо, начинаем заново.", 0.5,
                     reply_markup=gender_keyboard())
@@ -1432,7 +1499,7 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def reply_to_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """/reply chat_id текст — только для администратора (ADMIN_CHAT_ID),
+    """/reply chat_id текст, только для администратора (ADMIN_CHAT_ID),
     отправляет указанному пользователю сообщение от имени бота. Так можно
     ответить на вопрос, пришедший через кнопку «Поддержка»."""
     chat_id = update.effective_chat.id
@@ -1478,6 +1545,7 @@ def main():
         fallbacks=[CommandHandler("cancel", cancel), CommandHandler("start", start)],
     )
 
+    application.add_handler(TypeHandler(Update, restore_chart_if_needed), group=-2)
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_intercept), group=-1)
     application.add_handler(conv)
 
