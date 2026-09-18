@@ -277,18 +277,21 @@ async def text_intercept(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await context.bot.send_message(chat_id=int(ADMIN_CHAT_ID), text=f"🆘 Вопрос от пользователя {chat_id}:\n\n{text}")
             except Exception:
                 logging.exception("Не удалось переслать вопрос в поддержку")
-        await update.message.reply_text("Спасибо, вопрос передала, отвечу как можно быстрее.")
+        await update.message.reply_text("Спасибо, вопрос передала, отвечу как можно быстрее.", reply_markup=PERSISTENT_KEYBOARD)
         raise ApplicationHandlerStop
 
     feature = context.user_data.get("awaiting_email_for")
     if feature:
         if not EMAIL_RE.match(text):
-            await update.message.reply_text("Это не похоже на почту, пришлите, пожалуйста, в формате имя@почта.ру.")
+            await update.message.reply_text(
+                "Это не похоже на почту, пришлите, пожалуйста, в формате имя@почта.ру.",
+                reply_markup=ForceReply(input_field_placeholder="ваша@почта.ру"),
+            )
             raise ApplicationHandlerStop
         db_set_email(chat_id, text)
         context.user_data["email"] = text
         del context.user_data["awaiting_email_for"]
-        await update.message.reply_text("Спасибо, записала. Продолжаю с оплатой.")
+        await update.message.reply_text("Спасибо, записала. Продолжаю с оплатой.", reply_markup=PERSISTENT_KEYBOARD)
         if feature == "compat":
             await _start_compat_core(chat_id, context)
         elif feature == "numerology":
@@ -1428,6 +1431,26 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+async def reply_to_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/reply chat_id текст — только для администратора (ADMIN_CHAT_ID),
+    отправляет указанному пользователю сообщение от имени бота. Так можно
+    ответить на вопрос, пришедший через кнопку «Поддержка»."""
+    chat_id = update.effective_chat.id
+    if not ADMIN_CHAT_ID or str(chat_id) != str(ADMIN_CHAT_ID):
+        return
+    text = update.message.text or ""
+    parts = text.split(maxsplit=2)
+    if len(parts) < 3 or not parts[1].lstrip("-").isdigit():
+        await update.message.reply_text("Формат: /reply id_пользователя текст ответа")
+        return
+    target_id, message = int(parts[1]), parts[2]
+    try:
+        await context.bot.send_message(chat_id=target_id, text=f"Ответ от поддержки:\n\n{message}")
+        await update.message.reply_text("Отправлено.")
+    except Exception as e:
+        await update.message.reply_text(f"Не удалось отправить: {e}")
+
+
 def main():
     token = os.environ.get("BOT_TOKEN")
     if not token:
@@ -1488,6 +1511,7 @@ def main():
     application.add_handler(CallbackQueryHandler(payment_confirm, pattern="^paycheck:(numerology|tomorrow)$"))
     application.add_handler(CommandHandler("broadcast", broadcast))
     application.add_handler(CommandHandler("stats", stats))
+    application.add_handler(CommandHandler("reply", reply_to_user))
 
     log.info("Небосвод запущен, жду сообщений…")
     application.run_polling(allowed_updates=Update.ALL_TYPES)
