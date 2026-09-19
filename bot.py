@@ -892,7 +892,10 @@ async def _money_ritual_core(chat_id: int, context: ContextTypes.DEFAULT_TYPE):
     image_path = os.path.join(os.path.dirname(__file__), f"{planet}.png")
     if os.path.exists(image_path):
         with open(image_path, "rb") as f:
-            await context.bot.send_photo(chat_id=chat_id, photo=f, caption="Ваша денежная янтра, можно сохранить.")
+            await context.bot.send_photo(
+                chat_id=chat_id, photo=f,
+                caption="Это ваша числовая янтра, настоящая традиционная геометрия, не просто картинка. По традиции на неё смотрят несколько секунд перед тем, как произнести денежное намерение, задерживая взгляд на центре сетки, это способ сосредоточиться именно на этой планете. Сохраните изображение, чтобы использовать его каждую неделю в свой день.",
+            )
     await send_menu(context, chat_id)
 
 
