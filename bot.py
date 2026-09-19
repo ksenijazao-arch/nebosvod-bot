@@ -41,8 +41,8 @@ BROADCAST_PASSWORD = os.environ.get("BROADCAST_PASSWORD", "")
 YOOKASSA_SHOP_ID = os.environ.get("YOOKASSA_SHOP_ID", "")
 YOOKASSA_SECRET_KEY = os.environ.get("YOOKASSA_SECRET_KEY", "")
 
-FEATURE_PRICE = {"tomorrow": 100, "compat": 199, "numerology": 99}
-FEATURE_LABEL = {"tomorrow": "«Что ждёт меня завтра» на сутки", "compat": "разбор совместимости", "numerology": "число жизненного пути"}
+FEATURE_PRICE = {"tomorrow": 100, "compat": 199, "numerology": 99, "money_ritual": 99}
+FEATURE_LABEL = {"tomorrow": "«Что ждёт меня завтра» на сутки", "compat": "разбор совместимости", "numerology": "число жизненного пути", "money_ritual": "денежный ритуал по карте"}
 
 
 def db_connect():
@@ -357,6 +357,8 @@ async def text_intercept(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await _numerology_core(chat_id, context)
         elif feature == "tomorrow":
             await _tomorrow_menu_core(chat_id, context)
+        elif feature == "money_ritual":
+            await _money_ritual_core(chat_id, context)
         raise ApplicationHandlerStop
 
 
@@ -412,6 +414,8 @@ async def payment_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await _numerology_core(chat_id, context)
         elif feature == "tomorrow":
             await _tomorrow_menu_core(chat_id, context)
+        elif feature == "money_ritual":
+            await _money_ritual_core(chat_id, context)
     elif status in ("pending", "waiting_for_capture"):
         await context.bot.send_message(
             chat_id=chat_id,
@@ -439,6 +443,7 @@ NUMEROLOGY_CB = "numerology"
 TOMORROW_CB = "tomorrow"
 TOMORROW_WESTERN_CB = "tmrw_west"
 TOMORROW_CHOGHADIYA_CB = "tmrw_chog"
+MONEY_RITUAL_CB = "money_ritual"
 SKIP_PARTNER_TIME_CB = "skip_ptime"
 SKIP_PARTNER_CITY_CB = "skip_pcity"
 FORECAST_CB = "forecast"
@@ -866,6 +871,31 @@ async def _tomorrow_menu_core(chat_id: int, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+async def money_ritual(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    await _money_ritual_core(query.message.chat_id, context)
+
+
+async def _money_ritual_core(chat_id: int, context: ContextTypes.DEFAULT_TYPE):
+    chart = context.user_data.get("chart")
+    if not chart or not chart["has_time"]:
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text="Для этого нужно точное время рождения, чтобы верно вычислить асцендент. Пройдите разбор заново и укажите время.",
+        )
+        return
+    if not await payment_gate(chat_id, context, "money_ritual"):
+        return
+    planet = ac.money_planet(chart["rising"]["sign"])
+    await send_bot(context, chat_id, ct.MONEY_RITUAL_TEXTS[planet], 2.0)
+    image_path = os.path.join(os.path.dirname(__file__), f"{planet}.png")
+    if os.path.exists(image_path):
+        with open(image_path, "rb") as f:
+            await context.bot.send_photo(chat_id=chat_id, photo=f, caption="Ваша денежная янтра, можно сохранить.")
+    await send_menu(context, chat_id)
+
+
 def _tomorrow_setup(chart):
     tomorrow = date.today() + timedelta(days=1)
     tz_offset = ac.utc_offset_hours(chart["city"]["tz"], tomorrow.year, tomorrow.month, tomorrow.day, 12, 0)
@@ -991,6 +1021,7 @@ def main_menu_keyboard():
         [InlineKeyboardButton("💞 Совместимость, 199 ₽", callback_data=COMPAT_CB)],
         [InlineKeyboardButton("🔢 Число жизненного пути, 99 ₽", callback_data=NUMEROLOGY_CB)],
         [InlineKeyboardButton("🌅 Что ждёт меня завтра, 100 ₽/сутки", callback_data=TOMORROW_CB)],
+        [InlineKeyboardButton("🪙 Денежный ритуал по карте, 99 ₽", callback_data=MONEY_RITUAL_CB)],
         [InlineKeyboardButton("🔄 Начать заново", callback_data=RESTART_CB)],
     ])
 
@@ -1574,9 +1605,10 @@ def main():
     application.add_handler(CallbackQueryHandler(unlived, pattern=f"^{UNLIVED_CB}$"))
     application.add_handler(CallbackQueryHandler(numerology, pattern=f"^{NUMEROLOGY_CB}$"))
     application.add_handler(CallbackQueryHandler(tomorrow_menu, pattern=f"^{TOMORROW_CB}$"))
+    application.add_handler(CallbackQueryHandler(money_ritual, pattern=f"^{MONEY_RITUAL_CB}$"))
     application.add_handler(CallbackQueryHandler(tomorrow_western, pattern=f"^{TOMORROW_WESTERN_CB}$"))
     application.add_handler(CallbackQueryHandler(tomorrow_choghadiya, pattern=f"^{TOMORROW_CHOGHADIYA_CB}$"))
-    application.add_handler(CallbackQueryHandler(payment_confirm, pattern="^paycheck:(numerology|tomorrow)$"))
+    application.add_handler(CallbackQueryHandler(payment_confirm, pattern="^paycheck:(numerology|tomorrow|money_ritual)$"))
     application.add_handler(CommandHandler("broadcast", broadcast))
     application.add_handler(CommandHandler("stats", stats))
     application.add_handler(CommandHandler("reply", reply_to_user))

@@ -287,6 +287,22 @@ def _pinnacle_reduce(n):
     return n
 
 
+TRADITIONAL_RULER = {
+    "Овен": "mars", "Телец": "venus", "Близнецы": "mercury", "Рак": "moon",
+    "Лев": "sun", "Дева": "mercury", "Весы": "venus", "Скорпион": "mars",
+    "Стрелец": "jupiter", "Козерог": "saturn", "Водолей": "saturn", "Рыбы": "jupiter",
+}
+
+
+def money_planet(asc_sign_name):
+    """Денежная планета: управитель знака на втором доме (дом денег),
+    по классическим, домодерным управителям семи планет (Скорпион и
+    Водолей через Марс и Сатурн, не через Плутон и Уран), чтобы
+    согласоваться с остальной системой семи планет в боте."""
+    second_house_sign = sign_in_house(asc_sign_name, 2)
+    return TRADITIONAL_RULER[second_house_sign]
+
+
 def pinnacles(day, month, year):
     """Четыре вершины (pinnacle numbers): периоды жизни, у каждого своё
     число и свои возрастные границы, посчитанные от даты рождения. Первая
