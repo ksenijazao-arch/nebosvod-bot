@@ -888,8 +888,18 @@ async def _money_ritual_core(chat_id: int, context: ContextTypes.DEFAULT_TYPE):
     if not await payment_gate(chat_id, context, "money_ritual"):
         return
     planet = ac.money_planet(chart["rising"]["sign"])
+    second_house_sign = ac.sign_in_house(chart["rising"]["sign"], 2)
     full_text = ct.MONEY_RITUAL_TEXTS[planet]
     planet_label = ct.PLANET_LABEL[planet]
+
+    reasoning = (
+        f"В вашей карте на втором доме, доме денег, стоит {second_house_sign}, управитель этого знака, "
+        f"{planet_label}. Вот почему {planet_label} и есть ваша денежная планета.\n\n"
+    )
+    header_marker = f"{planet_label}, ваш день"
+    idx = full_text.index(header_marker)
+    line_end = full_text.index("\n\n", idx) + 2
+    full_text = full_text[:line_end] + reasoning + full_text[line_end:]
 
     part1, rest = full_text.split("\n\nСам ритуал, по шагам:\n", 1)
     steps, rest = rest.split("\n\nКак часто:", 1)
@@ -898,8 +908,8 @@ async def _money_ritual_core(chat_id: int, context: ContextTypes.DEFAULT_TYPE):
 
     await send_bot(context, chat_id, part1, 1.8)
     await send_bot(context, chat_id, f"🪙 {planet_label}\n\nСам ритуал, по шагам:\n" + steps, 1.6)
-    await send_bot(context, chat_id, f"🪙 {planet_label}\n\n" + freq, 1.4)
-    await send_bot(context, chat_id, f"🪙 {planet_label}\n\nЧего избегать:" + avoid, 1.0)
+    await send_bot(context, chat_id, freq, 1.4)
+    await send_bot(context, chat_id, "Чего избегать:" + avoid, 1.0)
 
     image_path = os.path.join(os.path.dirname(__file__), f"{planet}.png")
     if os.path.exists(image_path):
