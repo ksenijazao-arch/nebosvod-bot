@@ -888,7 +888,19 @@ async def _money_ritual_core(chat_id: int, context: ContextTypes.DEFAULT_TYPE):
     if not await payment_gate(chat_id, context, "money_ritual"):
         return
     planet = ac.money_planet(chart["rising"]["sign"])
-    await send_bot(context, chat_id, ct.MONEY_RITUAL_TEXTS[planet], 2.0)
+    full_text = ct.MONEY_RITUAL_TEXTS[planet]
+    planet_label = ct.PLANET_LABEL[planet]
+
+    part1, rest = full_text.split("\n\nСам ритуал, по шагам:\n", 1)
+    steps, rest = rest.split("\n\nКак часто:", 1)
+    freq_and_rest = "Как часто:" + rest
+    freq, avoid = freq_and_rest.split("\n\nЧего избегать:", 1)
+
+    await send_bot(context, chat_id, part1, 1.8)
+    await send_bot(context, chat_id, f"🪙 {planet_label}\n\nСам ритуал, по шагам:\n" + steps, 1.6)
+    await send_bot(context, chat_id, f"🪙 {planet_label}\n\n" + freq, 1.4)
+    await send_bot(context, chat_id, f"🪙 {planet_label}\n\nЧего избегать:" + avoid, 1.0)
+
     image_path = os.path.join(os.path.dirname(__file__), f"{planet}.png")
     if os.path.exists(image_path):
         with open(image_path, "rb") as f:
