@@ -58,6 +58,7 @@ def db_init():
         cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS chart_json TEXT")
         cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS date_str TEXT")
         cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS gender TEXT")
+        cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS source TEXT")
         cur.execute("""
             CREATE TABLE IF NOT EXISTS payments (
                 id SERIAL PRIMARY KEY,
@@ -73,12 +74,16 @@ def db_init():
         conn.commit()
 
 
-def db_remember_user(chat_id):
+def db_remember_user(chat_id, source=None):
     if not DATABASE_URL:
         return
     try:
         with db_connect() as conn, conn.cursor() as cur:
-            cur.execute("INSERT INTO users (chat_id) VALUES (%s) ON CONFLICT DO NOTHING", (chat_id,))
+            cur.execute(
+                "INSERT INTO users (chat_id, source) VALUES (%s, %s) "
+                "ON CONFLICT (chat_id) DO UPDATE SET source = COALESCE(users.source, EXCLUDED.source)",
+                (chat_id, source),
+            )
             conn.commit()
     except Exception:
         logging.exception("не удалось сохранить пользователя")
@@ -477,7 +482,8 @@ def gender_keyboard():
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     chat_id = update.effective_chat.id
-    db_remember_user(chat_id)
+    source = context.args[0][:60] if context.args else None
+    db_remember_user(chat_id, source)
 
     if context.user_data.get("chart"):
         await send_bot(context, chat_id, "С возвращением! Ваш разбор уже готов, не нужно проходить его заново.", 0.5)
@@ -1546,11 +1552,19 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
             week = cur.fetchone()[0]
             cur.execute("SELECT COUNT(*) FROM users WHERE first_seen > now() - interval '1 day'")
             day = cur.fetchone()[0]
+            cur.execute(
+                "SELECT COALESCE(source, 'без метки'), COUNT(*) FROM users "
+                "WHERE first_seen > now() - interval '14 days' "
+                "GROUP BY source ORDER BY COUNT(*) DESC LIMIT 15"
+            )
+            by_source = cur.fetchall()
     except Exception as e:
         await update.message.reply_text(f"Не удалось посчитать: {e}")
         return
+    source_lines = "\n".join(f"  {name}: {count}" for name, count in by_source) or "  нет данных"
     await update.message.reply_text(
-        f"Всего заходило в бота: {total}.\nЗа последние 7 дней: {week}.\nЗа последние сутки: {day}."
+        f"Всего заходило в бота: {total}.\nЗа последние 7 дней: {week}.\nЗа последние сутки: {day}.\n\n"
+        f"По источникам за 14 дней:\n{source_lines}"
     )
 
 
