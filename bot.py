@@ -1558,13 +1558,27 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "GROUP BY source ORDER BY COUNT(*) DESC LIMIT 15"
             )
             by_source = cur.fetchall()
+            cur.execute("SELECT COUNT(*) FROM users WHERE chart_json IS NOT NULL")
+            finished = cur.fetchone()[0]
+            cur.execute(
+                "SELECT feature, COUNT(*), COALESCE(SUM(amount),0) FROM payments "
+                "WHERE status='succeeded' GROUP BY feature ORDER BY COUNT(*) DESC"
+            )
+            by_feature = cur.fetchall()
+            cur.execute("SELECT COUNT(*), COALESCE(SUM(amount),0) FROM payments WHERE status='succeeded'")
+            paid_count, paid_sum = cur.fetchone()
     except Exception as e:
         await update.message.reply_text(f"Не удалось посчитать: {e}")
         return
     source_lines = "\n".join(f"  {name}: {count}" for name, count in by_source) or "  нет данных"
+    feature_lines = "\n".join(
+        f"  {FEATURE_LABEL.get(name, name)}: {count} шт. на {amount:.0f}₽" for name, count, amount in by_feature
+    ) or "  пока нет оплат"
     await update.message.reply_text(
-        f"Всего заходило в бота: {total}.\nЗа последние 7 дней: {week}.\nЗа последние сутки: {day}.\n\n"
-        f"По источникам за 14 дней:\n{source_lines}"
+        f"Всего заходило в бота: {total}.\nЗа последние 7 дней: {week}.\nЗа последние сутки: {day}.\n"
+        f"Дошли до бесплатного разбора: {finished}.\n\n"
+        f"По источникам за 14 дней:\n{source_lines}\n\n"
+        f"Оплаты всего: {paid_count} шт. на {paid_sum:.0f}₽\n{feature_lines}"
     )
 
 
