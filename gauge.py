@@ -104,7 +104,7 @@ def render_harmony_gauge(score, planets_in_harmony, out_path, width=900, height=
     _centered_text(draw, cx, cy + 36, f"{score:+.1f}", score_font, WHITE)
 
     title_font = _font(32, bold=True)
-    _centered_text(draw, width / 2, 28, "Гармония вашей натальной карты", title_font, GOLD)
+    _centered_text(draw, width / 2, 28, "Насколько гармонична ваша карта", title_font, GOLD)
 
     sub_font = _font(24)
     _centered_text(draw, width / 2, height - 46, f"Планет в гармоничных аспектах: {planets_in_harmony} из 10", sub_font, WHITE)

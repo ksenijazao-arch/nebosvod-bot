@@ -38,6 +38,7 @@ import content as ct
 import content_extended as ct2
 import gauge
 import wheel
+import cards
 
 DATABASE_URL = os.environ.get("DATABASE_URL")
 BROADCAST_PASSWORD = os.environ.get("BROADCAST_PASSWORD", "")
@@ -1056,7 +1057,7 @@ def main_menu_keyboard():
     ] + [
         [InlineKeyboardButton("🔭 Узнать важные даты", callback_data=FORECAST_CB)],
         [InlineKeyboardButton("✨ Непрожитые жизни", callback_data=UNLIVED_CB)],
-        [InlineKeyboardButton("🌌 Гармония моей карты", callback_data=HARMONY_CB)],
+        [InlineKeyboardButton("🌡️ Насколько гармонична моя карта", callback_data=HARMONY_CB)],
         [InlineKeyboardButton(f"🪐 Расширенный разбор карты, {FEATURE_PRICE['extended_natal']} ₽", callback_data=EXTENDED_NATAL_CB)],
         [InlineKeyboardButton("💞 Совместимость, 199 ₽", callback_data=COMPAT_CB)],
         [InlineKeyboardButton("🔢 Число жизненного пути, 99 ₽", callback_data=NUMEROLOGY_CB)],
@@ -1463,13 +1464,14 @@ async def _extended_natal_core(chat_id: int, context: ContextTypes.DEFAULT_TYPE)
 
     ext = ac.compute_extended_chart(chart)
     has_houses = ext["houses"] is not None
+    h = ac.harmony_score(ext)
 
     await send_bot(context, chat_id, "Собираю расширенный разбор — десять планет и три дополнительные точки…", 1.0)
 
     wheel_path = os.path.join("/tmp", f"wheel_{chat_id}.png")
     lons = {key: ac.SIGNS.index(ext[key]["sign"]) * 30 + ext[key]["deg"] for key in ac.EXTENDED_PLANET_KEYS}
     asc_lon = ac.ascendant(chart["birth_jd"], chart["city"]["lat"], chart["city"]["lon"]) if has_houses else 0
-    wheel.render_natal_wheel(lons, asc_lon, ac.harmony_score(ext)["pairs"], wheel_path, has_houses=has_houses)
+    wheel.render_natal_wheel(lons, asc_lon, h["pairs"], wheel_path, has_houses=has_houses)
     with open(wheel_path, "rb") as f:
         await context.bot.send_photo(chat_id=chat_id, photo=f)
     try:
@@ -1483,34 +1485,69 @@ async def _extended_natal_core(chat_id: int, context: ContextTypes.DEFAULT_TYPE)
         "mars": "♂️ Марс", "jupiter": "♃ Юпитер", "saturn": "♄ Сатурн",
         "uranus": "♅ Уран", "neptune": "♆ Нептун", "pluto": "♇ Плутон",
     }
+    planet_name_clean = {
+        "sun": "Солнце", "moon": "Луна", "mercury": "Меркурий", "venus": "Венера", "mars": "Марс",
+        "jupiter": "Юпитер", "saturn": "Сатурн", "uranus": "Уран", "neptune": "Нептун", "pluto": "Плутон",
+    }
     sign_texts_by_planet = ct2.EXT_SIGN_TEXTS
 
     for key in planet_order:
         p = ext[key]
+        sign_idx = ac.SIGNS.index(p["sign"])
+        house_num = ext["houses"][key] if has_houses else None
+
+        card_path = os.path.join("/tmp", f"card_{chat_id}_{key}.png")
+        cards.render_point_card(
+            wheel.PLANET_GLYPH[key], planet_name_clean[key], wheel.ZODIAC_GLYPH[sign_idx], p["sign"],
+            house_num, h["per_planet"][key], card_path,
+        )
+        with open(card_path, "rb") as f:
+            await context.bot.send_photo(chat_id=chat_id, photo=f)
+        try:
+            os.remove(card_path)
+        except OSError:
+            pass
+
         lines = [f"*{planet_label[key]} в {ac.SIGN_PREPOSITIONAL[p['sign']]}*", "", sign_texts_by_planet[key][p["sign"]]]
         if has_houses:
-            house_num = ext["houses"][key]
             lines.append("")
             lines.append(ct2.PLANET_HOUSE_TEXTS[key][house_num])
         lines.append("")
-        lines.append(ct2.PLANET_PRACTICE_TEXTS[key])
+        lines.append(f"*{ct2.PRACTICE_LABEL[key]}.* {ct2.PLANET_PRACTICE_TEXTS[key]}")
         await send_bot(context, chat_id, "\n".join(lines), 1.3, parse_mode="Markdown")
 
     point_label = {"lilith": "⚸ Лилит", "vertex": "🔺 Вертекс", "fortune": "🍀 Парс Фортуны"}
     point_sign_texts = {"lilith": ct2.LILITH_TEXTS, "vertex": ct2.VERTEX_TEXTS, "fortune": ct2.FORTUNE_TEXTS}
     point_house_texts = {"lilith": ct2.LILITH_HOUSE_TEXTS, "vertex": ct2.VERTEX_HOUSE_TEXTS, "fortune": ct2.FORTUNE_HOUSE_TEXTS}
 
+    point_glyph = {"lilith": "⚸", "vertex": "Vx", "fortune": "⊗"}
+    point_name_clean = {"lilith": "Лилит", "vertex": "Вертекс", "fortune": "Парс Фортуны"}
+
     for key in ac.POINT_KEYS:
         p = ext.get(key)
         if p is None:
             continue
+        sign_idx = ac.SIGNS.index(p["sign"])
+        house_num = ext["houses"][key] if has_houses else None
+
+        card_path = os.path.join("/tmp", f"card_{chat_id}_{key}.png")
+        cards.render_point_card(
+            point_glyph[key], point_name_clean[key], wheel.ZODIAC_GLYPH[sign_idx], p["sign"],
+            house_num, None, card_path,
+        )
+        with open(card_path, "rb") as f:
+            await context.bot.send_photo(chat_id=chat_id, photo=f)
+        try:
+            os.remove(card_path)
+        except OSError:
+            pass
+
         lines = [f"*{point_label[key]} в {ac.SIGN_PREPOSITIONAL[p['sign']]}*", "", point_sign_texts[key][p["sign"]]]
         if has_houses:
-            house_num = ext["houses"][key]
             lines.append("")
             lines.append(point_house_texts[key][house_num])
         lines.append("")
-        lines.append(ct2.PLANET_PRACTICE_TEXTS[key])
+        lines.append(f"*{ct2.PRACTICE_LABEL[key]}.* {ct2.PLANET_PRACTICE_TEXTS[key]}")
         await send_bot(context, chat_id, "\n".join(lines), 1.3, parse_mode="Markdown")
 
     h = ac.harmony_score(ext)
