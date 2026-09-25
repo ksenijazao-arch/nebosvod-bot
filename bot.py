@@ -463,10 +463,6 @@ SPHERE_CB_PREFIX = "sphere:"
 UNLIVED_CB = "unlived"
 HARMONY_CB = "harmony"
 EXTENDED_NATAL_CB = "extended_natal"
-CATEGORY_CHART_CB = "cat_chart"
-CATEGORY_MONEY_CB = "cat_money"
-CATEGORY_LOVE_CB = "cat_love"
-BACK_TO_MENU_CB = "back_menu"
 
 
 def fmt_date(d: date) -> str:
@@ -1056,9 +1052,12 @@ SPHERE_EMOJI = {"money": "💰", "love": "❤️", "career": "💼", "health": "
 
 def main_menu_keyboard():
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🔮 Моя карта", callback_data=CATEGORY_CHART_CB)],
-        [InlineKeyboardButton("💰 Деньги", callback_data=CATEGORY_MONEY_CB)],
-        [InlineKeyboardButton("❤️ Отношения", callback_data=CATEGORY_LOVE_CB)],
+        [InlineKeyboardButton("🌡️ Гармония карты", callback_data=HARMONY_CB),
+         InlineKeyboardButton(f"🪐 Разбор, {FEATURE_PRICE['extended_natal']} ₽", callback_data=EXTENDED_NATAL_CB)],
+        [InlineKeyboardButton("💰 Сфера денег", callback_data=f"{SPHERE_CB_PREFIX}money"),
+         InlineKeyboardButton("🪙 Ритуал, 99 ₽", callback_data=MONEY_RITUAL_CB)],
+        [InlineKeyboardButton("❤️ Сфера отношений", callback_data=f"{SPHERE_CB_PREFIX}love"),
+         InlineKeyboardButton("💞 Совместимость, 199 ₽", callback_data=COMPAT_CB)],
         [InlineKeyboardButton(f"{SPHERE_EMOJI['career']} {ct.SPHERES['career']['title']}", callback_data=f"{SPHERE_CB_PREFIX}career")],
         [InlineKeyboardButton(f"{SPHERE_EMOJI['health']} {ct.SPHERES['health']['title']}", callback_data=f"{SPHERE_CB_PREFIX}health")],
         [InlineKeyboardButton("🔭 Узнать важные даты", callback_data=FORECAST_CB)],
@@ -1067,50 +1066,6 @@ def main_menu_keyboard():
         [InlineKeyboardButton("🌅 Что ждёт меня завтра, 100 ₽/сутки", callback_data=TOMORROW_CB)],
         [InlineKeyboardButton("🔄 Начать заново", callback_data=RESTART_CB)],
     ])
-
-
-def category_keyboard(buttons):
-    rows = [[InlineKeyboardButton(text, callback_data=cb)] for text, cb in buttons]
-    rows.append([InlineKeyboardButton("« Назад в меню", callback_data=BACK_TO_MENU_CB)])
-    return InlineKeyboardMarkup(rows)
-
-
-async def category_chart(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    kb = category_keyboard([
-        ("🌡️ Насколько гармонична моя карта", HARMONY_CB),
-        (f"🪐 Расширенный разбор карты, {FEATURE_PRICE['extended_natal']} ₽", EXTENDED_NATAL_CB),
-    ])
-    await context.bot.send_message(chat_id=query.message.chat_id, text="Что посмотреть по вашей натальной карте?", reply_markup=kb)
-
-
-async def category_money(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    kb = category_keyboard([
-        ("💰 Разбор денежной сферы", f"{SPHERE_CB_PREFIX}money"),
-        ("🪙 Денежный ритуал по карте, 99 ₽", MONEY_RITUAL_CB),
-    ])
-    await context.bot.send_message(chat_id=query.message.chat_id, text="Что посмотреть про деньги?", reply_markup=kb)
-
-
-async def category_love(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    kb = category_keyboard([
-        ("❤️ Разбор сферы отношений", f"{SPHERE_CB_PREFIX}love"),
-        ("💞 Совместимость, 199 ₽", COMPAT_CB),
-    ])
-    await context.bot.send_message(chat_id=query.message.chat_id, text="Что посмотреть про отношения?", reply_markup=kb)
-
-
-async def back_to_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    await send_full_menu(update, context)
-
-
 
 
 PERSISTENT_KEYBOARD = ReplyKeyboardMarkup([["📋 Меню", "🆘 Поддержка"]], resize_keyboard=True)
@@ -1878,10 +1833,6 @@ def main():
     application.add_handler(CallbackQueryHandler(unlived, pattern=f"^{UNLIVED_CB}$"))
     application.add_handler(CallbackQueryHandler(harmony, pattern=f"^{HARMONY_CB}$"))
     application.add_handler(CallbackQueryHandler(extended_natal, pattern=f"^{EXTENDED_NATAL_CB}$"))
-    application.add_handler(CallbackQueryHandler(category_chart, pattern=f"^{CATEGORY_CHART_CB}$"))
-    application.add_handler(CallbackQueryHandler(category_money, pattern=f"^{CATEGORY_MONEY_CB}$"))
-    application.add_handler(CallbackQueryHandler(category_love, pattern=f"^{CATEGORY_LOVE_CB}$"))
-    application.add_handler(CallbackQueryHandler(back_to_menu, pattern=f"^{BACK_TO_MENU_CB}$"))
     application.add_handler(CallbackQueryHandler(numerology, pattern=f"^{NUMEROLOGY_CB}$"))
     application.add_handler(CallbackQueryHandler(tomorrow_menu, pattern=f"^{TOMORROW_CB}$"))
     application.add_handler(CallbackQueryHandler(money_ritual, pattern=f"^{MONEY_RITUAL_CB}$"))
