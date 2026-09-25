@@ -35,14 +35,16 @@ from telegram.ext import (
 
 import astro_calc as ac
 import content as ct
+import content_extended as ct2
+import gauge
 
 DATABASE_URL = os.environ.get("DATABASE_URL")
 BROADCAST_PASSWORD = os.environ.get("BROADCAST_PASSWORD", "")
 YOOKASSA_SHOP_ID = os.environ.get("YOOKASSA_SHOP_ID", "")
 YOOKASSA_SECRET_KEY = os.environ.get("YOOKASSA_SECRET_KEY", "")
 
-FEATURE_PRICE = {"tomorrow": 100, "compat": 199, "numerology": 99, "money_ritual": 99}
-FEATURE_LABEL = {"tomorrow": "«Что ждёт меня завтра» на сутки", "compat": "разбор совместимости", "numerology": "число жизненного пути", "money_ritual": "денежный ритуал по карте"}
+FEATURE_PRICE = {"tomorrow": 100, "compat": 199, "numerology": 99, "money_ritual": 99, "extended_natal": 249}
+FEATURE_LABEL = {"tomorrow": "«Что ждёт меня завтра» на сутки", "compat": "разбор совместимости", "numerology": "число жизненного пути", "money_ritual": "денежный ритуал по карте", "extended_natal": "расширенный разбор натальной карты"}
 
 
 def db_connect():
@@ -421,6 +423,8 @@ async def payment_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await _tomorrow_menu_core(chat_id, context)
         elif feature == "money_ritual":
             await _money_ritual_core(chat_id, context)
+        elif feature == "extended_natal":
+            await _extended_natal_core(chat_id, context)
     elif status in ("pending", "waiting_for_capture"):
         await context.bot.send_message(
             chat_id=chat_id,
@@ -455,6 +459,8 @@ FORECAST_CB = "forecast"
 RESTART_CB = "restart"
 SPHERE_CB_PREFIX = "sphere:"
 UNLIVED_CB = "unlived"
+HARMONY_CB = "harmony"
+EXTENDED_NATAL_CB = "extended_natal"
 
 
 def fmt_date(d: date) -> str:
@@ -1049,6 +1055,8 @@ def main_menu_keyboard():
     ] + [
         [InlineKeyboardButton("🔭 Узнать важные даты", callback_data=FORECAST_CB)],
         [InlineKeyboardButton("✨ Непрожитые жизни", callback_data=UNLIVED_CB)],
+        [InlineKeyboardButton("🌌 Гармония моей карты, бесплатно", callback_data=HARMONY_CB)],
+        [InlineKeyboardButton(f"🪐 Расширенный разбор карты, {FEATURE_PRICE['extended_natal']} ₽", callback_data=EXTENDED_NATAL_CB)],
         [InlineKeyboardButton("💞 Совместимость, 199 ₽", callback_data=COMPAT_CB)],
         [InlineKeyboardButton("🔢 Число жизненного пути, 99 ₽", callback_data=NUMEROLOGY_CB)],
         [InlineKeyboardButton("🌅 Что ждёт меня завтра, 100 ₽/сутки", callback_data=TOMORROW_CB)],
@@ -1390,6 +1398,123 @@ async def unlived(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await send_menu(context, chat_id)
 
 
+# ---------- гармония карты (бесплатный спидометр) и расширенный разбор (платный) ----------
+
+async def harmony(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    chat_id = query.message.chat_id
+    chart = context.user_data.get("chart")
+    if not chart:
+        await context.bot.send_message(chat_id=chat_id, text="Сначала пройдите разбор заново: /start")
+        return
+
+    await send_bot(context, chat_id, "Считаю аспекты между планетами и балл гармонии вашей карты…", 1.0)
+
+    ext = ac.compute_extended_chart(chart)
+    h = ac.harmony_score(ext)
+
+    gauge_path = os.path.join("/tmp", f"harmony_{chat_id}.png")
+    gauge.render_harmony_gauge(h["total"], h["planets_in_harmony"], gauge_path)
+
+    with open(gauge_path, "rb") as f:
+        await context.bot.send_photo(chat_id=chat_id, photo=f)
+    try:
+        os.remove(gauge_path)
+    except OSError:
+        pass
+
+    await send_bot(context, chat_id, ct2.HARMONY_GAUGE_INTRO, 1.4)
+    await send_bot(context, chat_id, ct2.harmony_level_text(h["total"]), 1.6)
+
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton(f"🪐 Узнать, какие именно планеты — {FEATURE_PRICE['extended_natal']} ₽", callback_data=EXTENDED_NATAL_CB)],
+    ])
+    await context.bot.send_message(
+        chat_id=chat_id,
+        text="Спидометр показывает общий балл. В расширенном разборе видно, какая именно планета — ваш источник силы, а какая просит больше внимания.",
+        reply_markup=keyboard,
+    )
+    await send_menu(context, chat_id)
+
+
+async def extended_natal(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    await _extended_natal_core(query.message.chat_id, context)
+
+
+async def _extended_natal_core(chat_id: int, context: ContextTypes.DEFAULT_TYPE):
+    chart = context.user_data.get("chart")
+    if not chart:
+        await context.bot.send_message(chat_id=chat_id, text="Сначала пройдите разбор заново: /start")
+        return
+    if not await payment_gate(chat_id, context, "extended_natal"):
+        return
+
+    if not (chart["has_time"] and chart["rising"]):
+        await send_bot(
+            context, chat_id,
+            "Дома считаются только по точному времени рождения. Для этого разбора мне нужно и время, и город: "
+            "пройдите разбор заново и укажите их, тогда пришлю полную версию, включая дома.",
+            1.2,
+        )
+
+    ext = ac.compute_extended_chart(chart)
+    has_houses = ext["houses"] is not None
+
+    await send_bot(context, chat_id, "Собираю расширенный разбор — десять планет и три дополнительные точки…", 1.0)
+
+    planet_order = ac.EXTENDED_PLANET_KEYS
+    planet_label = {
+        "sun": "☀️ Солнце", "moon": "🌙 Луна", "mercury": "☿️ Меркурий", "venus": "♀️ Венера",
+        "mars": "♂️ Марс", "jupiter": "♃ Юпитер", "saturn": "♄ Сатурн",
+        "uranus": "♅ Уран", "neptune": "♆ Нептун", "pluto": "♇ Плутон",
+    }
+    sign_texts_by_planet = {
+        "sun": ct.SUN_TEXTS, "moon": ct.MOON_TEXTS, "mercury": ct.MERCURY_TEXTS, "venus": ct.VENUS_TEXTS,
+        "mars": ct.MARS_TEXTS, "jupiter": ct.JUPITER_TEXTS, "saturn": ct.SATURN_TEXTS,
+        "uranus": ct2.URANUS_TEXTS, "neptune": ct2.NEPTUNE_TEXTS, "pluto": ct2.PLUTO_TEXTS,
+    }
+
+    for key in planet_order:
+        p = ext[key]
+        lines = [f"{planet_label[key]} в {ac.SIGN_PREPOSITIONAL[p['sign']]}", "", sign_texts_by_planet[key][p["sign"]]]
+        if has_houses:
+            house_num = ext["houses"][key]
+            lines.append("")
+            lines.append(ct2.PLANET_HOUSE_TEXTS[key][house_num])
+        await send_bot(context, chat_id, "\n".join(lines), 1.1)
+
+    point_label = {"lilith": "⚸ Лилит", "vertex": "🔺 Вертекс", "fortune": "🍀 Парс Фортуны"}
+    point_sign_texts = {"lilith": ct2.LILITH_TEXTS, "vertex": ct2.VERTEX_TEXTS, "fortune": ct2.FORTUNE_TEXTS}
+    point_house_texts = {"lilith": ct2.LILITH_HOUSE_TEXTS, "vertex": ct2.VERTEX_HOUSE_TEXTS, "fortune": ct2.FORTUNE_HOUSE_TEXTS}
+
+    for key in ac.POINT_KEYS:
+        p = ext.get(key)
+        if p is None:
+            continue
+        lines = [f"{point_label[key]} в {ac.SIGN_PREPOSITIONAL[p['sign']]}", "", point_sign_texts[key][p["sign"]]]
+        if has_houses:
+            house_num = ext["houses"][key]
+            lines.append("")
+            lines.append(point_house_texts[key][house_num])
+        await send_bot(context, chat_id, "\n".join(lines), 1.1)
+
+    h = ac.harmony_score(ext)
+    strongest = max(h["per_planet"], key=h["per_planet"].get)
+    weakest = min(h["per_planet"], key=h["per_planet"].get)
+    await send_bot(
+        context, chat_id,
+        f"И главный вывод по гармонии карты: {planet_label[strongest]} у вас в самых слаженных аспектах с остальными "
+        f"планетами — это ваш надёжный источник силы. А {planet_label[weakest]} чаще в напряжении с другими "
+        f"планетами — с этой сферой стоит работать осознанно, не пускать на самотёк.",
+        1.8,
+    )
+
+    await send_menu(context, chat_id)
+
+
 # ---------- прогноз ----------
 
 async def forecast(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1656,12 +1781,14 @@ def main():
     application.add_handler(CallbackQueryHandler(forecast, pattern=f"^{FORECAST_CB}$"))
     application.add_handler(CallbackQueryHandler(sphere, pattern=f"^{SPHERE_CB_PREFIX}"))
     application.add_handler(CallbackQueryHandler(unlived, pattern=f"^{UNLIVED_CB}$"))
+    application.add_handler(CallbackQueryHandler(harmony, pattern=f"^{HARMONY_CB}$"))
+    application.add_handler(CallbackQueryHandler(extended_natal, pattern=f"^{EXTENDED_NATAL_CB}$"))
     application.add_handler(CallbackQueryHandler(numerology, pattern=f"^{NUMEROLOGY_CB}$"))
     application.add_handler(CallbackQueryHandler(tomorrow_menu, pattern=f"^{TOMORROW_CB}$"))
     application.add_handler(CallbackQueryHandler(money_ritual, pattern=f"^{MONEY_RITUAL_CB}$"))
     application.add_handler(CallbackQueryHandler(tomorrow_western, pattern=f"^{TOMORROW_WESTERN_CB}$"))
     application.add_handler(CallbackQueryHandler(tomorrow_choghadiya, pattern=f"^{TOMORROW_CHOGHADIYA_CB}$"))
-    application.add_handler(CallbackQueryHandler(payment_confirm, pattern="^paycheck:(numerology|tomorrow|money_ritual)$"))
+    application.add_handler(CallbackQueryHandler(payment_confirm, pattern="^paycheck:(numerology|tomorrow|money_ritual|extended_natal)$"))
     application.add_handler(CommandHandler("broadcast", broadcast))
     application.add_handler(CommandHandler("stats", stats))
     application.add_handler(CommandHandler("reply", reply_to_user))

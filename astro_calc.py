@@ -555,7 +555,43 @@ ELEMENTS = {
     "mars":    dict(a=1.52371034, e=0.0933941, L0=355.44656795, Lr=19140.30268499, pi0=336.05637041, pir=0.44441088),
     "jupiter": dict(a=5.202887, e=0.04838624, L0=34.39644051, Lr=3034.74612775, pi0=14.72847983, pir=0.21252668),
     "saturn":  dict(a=9.53667594, e=0.05386179, L0=49.95424423, Lr=1222.49362201, pi0=92.59887831, pir=-0.41897216),
+    # Стандартные кеплеровы элементы JPL (эпоха J2000, диапазон 1800-2050),
+    # тот же источник и та же точность, что уже используется для Марса/Юпитера/Сатурна выше.
+    "uranus":  dict(a=19.18916464, e=0.04725744, L0=313.23810451, Lr=428.48202785, pi0=170.95427630, pir=0.40805281),
+    "neptune": dict(a=30.06992276, e=0.00859048, L0=304.87997031, Lr=218.45945325, pi0=44.96476227, pir=-0.32241464),
+    "pluto":   dict(a=39.48211675, e=0.24882730, L0=238.92903833, Lr=145.20780515, pi0=224.06891629, pir=-0.04062942),
 }
+
+
+def lilith_mean_longitude(jd):
+    """Средняя (не истинная) Чёрная Луна — Лилит, точка среднего апогея
+    лунной орбиты. Формула Meeus, цикл ~8.85 года, движение прямое."""
+    t = (jd - 2451545.0) / 36525
+    lon = (83.3532465 + 4069.0137287 * t - 0.0103200 * t * t
+           - t ** 3 / 80053.0 + t ** 4 / 18999000.0)
+    return norm360(lon)
+
+
+def vertex_longitude(jd, lat_deg, lon_deg):
+    """Вертекс — точка пересечения эклиптики с первым вертикалом (западная
+    сторона). Считается той же формулой, что и асцендент (см. ascendant()
+    выше), но с местным звёздным временем +90° и с ко-широтой (90°-широта)
+    вместо самой широты, плюс разворот на 180° к западной точке."""
+    lst = norm360(gst(jd) + lon_deg + 90)
+    lst_rad = math.radians(lst)
+    eps = math.radians(obliquity(jd))
+    colat = math.radians(90 - lat_deg)
+    y = math.cos(lst_rad)
+    x = -(math.sin(eps) * math.tan(colat) + math.cos(eps) * math.sin(lst_rad))
+    return norm360(math.degrees(math.atan2(y, x)) + 180)
+
+
+def part_of_fortune_longitude(asc_lon, sun_lon, moon_lon, is_day_chart):
+    """Парс Фортуны: для дневной карты Asc+Луна-Солнце, для ночной
+    Asc+Солнце-Луна (классическая, не гелленистическая антифортуна)."""
+    if is_day_chart:
+        return norm360(asc_lon + moon_lon - sun_lon)
+    return norm360(asc_lon + sun_lon - moon_lon)
 
 
 def kepler_e(m, e):
@@ -730,3 +766,104 @@ def is_retrograde(planet_key, jd):
     lon_next = planet_longitude(planet_key, jd + 1)
     diff = norm360(lon_next - lon_now)
     return diff > 180
+
+
+# ---------- расширенная карта: внешние планеты, Лилит/Вертекс/Парс, дома ----------
+
+EXTENDED_PLANET_KEYS = ["sun", "moon", "mercury", "venus", "mars", "jupiter",
+                        "saturn", "uranus", "neptune", "pluto"]
+POINT_KEYS = ["lilith", "vertex", "fortune"]
+
+
+def compute_extended_chart(chart):
+    """Достраивает базовую карту (см. compute_chart) до полного набора:
+    Уран/Нептун/Плутон, Лилит/Вертекс/Парс Фортуны, плюс номер дома для
+    каждой из 13 точек (whole-sign дома от асцендента, как и house_of_sign
+    в остальном коде). Дома считаются, только если известно время рождения
+    (нужен настоящий асцендент), иначе house=None у всех точек."""
+    jd = chart["birth_jd"]
+    city = chart["city"]
+    has_time = chart["has_time"] and chart.get("rising") is not None
+
+    sun_lon = sun_longitude(jd)
+    moon_lon = moon_longitude(jd)
+
+    ext = dict(chart)
+    ext["uranus"] = sign_of(planet_longitude("uranus", jd))
+    ext["neptune"] = sign_of(planet_longitude("neptune", jd))
+    ext["pluto"] = sign_of(planet_longitude("pluto", jd))
+    ext["lilith"] = sign_of(lilith_mean_longitude(jd))
+
+    if has_time:
+        asc_lon = ascendant(jd, city["lat"], city["lon"])
+        ext["vertex"] = sign_of(vertex_longitude(jd, city["lat"], city["lon"]))
+        asc_sign_idx = SIGNS.index(chart["rising"]["sign"])
+        sun_house = ((SIGNS.index(sign_of(sun_lon)["sign"]) - asc_sign_idx) % 12) + 1
+        is_day = 7 <= sun_house <= 12
+        ext["fortune"] = sign_of(part_of_fortune_longitude(asc_lon, sun_lon, moon_lon, is_day))
+        houses = {}
+        for key in EXTENDED_PLANET_KEYS + POINT_KEYS:
+            houses[key] = house_of_sign(ext[key]["sign"], chart["rising"]["sign"])
+        ext["houses"] = houses
+    else:
+        ext["vertex"] = None
+        ext["fortune"] = None
+        ext["houses"] = None
+
+    return ext
+
+
+ASPECT_DEFS = [
+    ("conjunction", 0, 8),
+    ("sextile", 60, 6),
+    ("square", 90, 7),
+    ("trine", 120, 8),
+    ("opposition", 180, 8),
+]
+HARMONY_WEIGHT = {"conjunction": 0.3, "sextile": 1.0, "square": -1.0, "trine": 1.2, "opposition": -1.0}
+
+
+def full_aspect(lon1, lon2):
+    """Тип аспекта и точный орб (в отличие от natal_aspect(), который только
+    классифицирует). Возвращает (kind, orb, max_orb) либо (None, None, None),
+    если между точками нет значимого аспекта."""
+    diff = ang_diff(lon1, lon2)
+    for kind, angle, max_orb in ASPECT_DEFS:
+        if abs(diff - angle) <= max_orb:
+            return kind, abs(diff - angle), max_orb
+    return None, None, None
+
+
+def harmony_score(ext_chart):
+    """Балл гармонии карты — собственный метод в духе космодинов Эдвала
+    (не воспроизводит его точную формулу, она не опубликована, но использует
+    тот же принцип: сила аспекта тем больше, чем точнее орб, гармоничные
+    аспекты в плюс, напряжённые в минус). Считает по 10 классическим планетам.
+    Возвращает total (float), planets_in_harmony (int, сколько планет чаще
+    в гармоничных, чем в напряжённых аспектах) и разбивку по парам."""
+    lons = {}
+    for key in EXTENDED_PLANET_KEYS:
+        p = ext_chart[key]
+        lons[key] = SIGNS.index(p["sign"]) * 30 + p["deg"]
+
+    pair_scores = []
+    per_planet = {k: 0.0 for k in EXTENDED_PLANET_KEYS}
+    for i, k1 in enumerate(EXTENDED_PLANET_KEYS):
+        for k2 in EXTENDED_PLANET_KEYS[i + 1:]:
+            kind, orb, max_orb = full_aspect(lons[k1], lons[k2])
+            if kind is None:
+                continue
+            closeness = 1 - (orb / max_orb)
+            weight = HARMONY_WEIGHT[kind] * closeness
+            pair_scores.append({"a": k1, "b": k2, "kind": kind, "orb": round(orb, 2), "weight": round(weight, 2)})
+            per_planet[k1] += weight
+            per_planet[k2] += weight
+
+    total = sum(p["weight"] for p in pair_scores)
+    planets_in_harmony = sum(1 for v in per_planet.values() if v > 0)
+    return {
+        "total": round(total, 2),
+        "planets_in_harmony": planets_in_harmony,
+        "per_planet": {k: round(v, 2) for k, v in per_planet.items()},
+        "pairs": pair_scores,
+    }
