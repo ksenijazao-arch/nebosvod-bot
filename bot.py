@@ -1052,12 +1052,12 @@ SPHERE_EMOJI = {"money": "💰", "love": "❤️", "career": "💼", "health": "
 
 def main_menu_keyboard():
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🌡️ Гармония карты", callback_data=HARMONY_CB),
-         InlineKeyboardButton(f"🪐 Разбор, {FEATURE_PRICE['extended_natal']} ₽", callback_data=EXTENDED_NATAL_CB)],
-        [InlineKeyboardButton("💰 Сфера денег", callback_data=f"{SPHERE_CB_PREFIX}money"),
-         InlineKeyboardButton("🪙 Ритуал, 99 ₽", callback_data=MONEY_RITUAL_CB)],
-        [InlineKeyboardButton("❤️ Сфера отношений", callback_data=f"{SPHERE_CB_PREFIX}love"),
-         InlineKeyboardButton("💞 Совместимость, 199 ₽", callback_data=COMPAT_CB)],
+        [InlineKeyboardButton("🌡️ Гармония моей карты", callback_data=HARMONY_CB)],
+        [InlineKeyboardButton(f"🪐 Расширенный разбор карты, {FEATURE_PRICE['extended_natal']} ₽", callback_data=EXTENDED_NATAL_CB)],
+        [InlineKeyboardButton("💰 Сфера денег", callback_data=f"{SPHERE_CB_PREFIX}money")],
+        [InlineKeyboardButton("🪙 Денежный ритуал по карте, 99 ₽", callback_data=MONEY_RITUAL_CB)],
+        [InlineKeyboardButton("❤️ Сфера отношений", callback_data=f"{SPHERE_CB_PREFIX}love")],
+        [InlineKeyboardButton("💞 Совместимость, 199 ₽", callback_data=COMPAT_CB)],
         [InlineKeyboardButton(f"{SPHERE_EMOJI['career']} {ct.SPHERES['career']['title']}", callback_data=f"{SPHERE_CB_PREFIX}career")],
         [InlineKeyboardButton(f"{SPHERE_EMOJI['health']} {ct.SPHERES['health']['title']}", callback_data=f"{SPHERE_CB_PREFIX}health")],
         [InlineKeyboardButton("🔭 Узнать важные даты", callback_data=FORECAST_CB)],
