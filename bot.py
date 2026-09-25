@@ -1055,7 +1055,7 @@ def main_menu_keyboard():
     ] + [
         [InlineKeyboardButton("🔭 Узнать важные даты", callback_data=FORECAST_CB)],
         [InlineKeyboardButton("✨ Непрожитые жизни", callback_data=UNLIVED_CB)],
-        [InlineKeyboardButton("🌌 Гармония моей карты, бесплатно", callback_data=HARMONY_CB)],
+        [InlineKeyboardButton("🌌 Гармония моей карты", callback_data=HARMONY_CB)],
         [InlineKeyboardButton(f"🪐 Расширенный разбор карты, {FEATURE_PRICE['extended_natal']} ₽", callback_data=EXTENDED_NATAL_CB)],
         [InlineKeyboardButton("💞 Совместимость, 199 ₽", callback_data=COMPAT_CB)],
         [InlineKeyboardButton("🔢 Число жизненного пути, 99 ₽", callback_data=NUMEROLOGY_CB)],
