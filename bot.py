@@ -1425,8 +1425,8 @@ async def harmony(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except OSError:
         pass
 
-    await send_bot(context, chat_id, ct2.HARMONY_GAUGE_INTRO, 1.4)
-    await send_bot(context, chat_id, ct2.harmony_level_text(h["total"]), 1.6)
+    await send_bot(context, chat_id, "*Как это работает*\n\n" + ct2.HARMONY_GAUGE_INTRO, 1.4, parse_mode="Markdown")
+    await send_bot(context, chat_id, "*Что показывает ваш балл*\n\n" + ct2.harmony_level_text(h["total"]), 1.6, parse_mode="Markdown")
 
     keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton(f"🪐 Узнать, какие именно планеты — {FEATURE_PRICE['extended_natal']} ₽", callback_data=EXTENDED_NATAL_CB)],
@@ -1487,12 +1487,14 @@ async def _extended_natal_core(chat_id: int, context: ContextTypes.DEFAULT_TYPE)
 
     for key in planet_order:
         p = ext[key]
-        lines = [f"{planet_label[key]} в {ac.SIGN_PREPOSITIONAL[p['sign']]}", "", sign_texts_by_planet[key][p["sign"]]]
+        lines = [f"*{planet_label[key]} в {ac.SIGN_PREPOSITIONAL[p['sign']]}*", "", sign_texts_by_planet[key][p["sign"]]]
         if has_houses:
             house_num = ext["houses"][key]
             lines.append("")
             lines.append(ct2.PLANET_HOUSE_TEXTS[key][house_num])
-        await send_bot(context, chat_id, "\n".join(lines), 1.1)
+        lines.append("")
+        lines.append(ct2.PLANET_PRACTICE_TEXTS[key])
+        await send_bot(context, chat_id, "\n".join(lines), 1.3, parse_mode="Markdown")
 
     point_label = {"lilith": "⚸ Лилит", "vertex": "🔺 Вертекс", "fortune": "🍀 Парс Фортуны"}
     point_sign_texts = {"lilith": ct2.LILITH_TEXTS, "vertex": ct2.VERTEX_TEXTS, "fortune": ct2.FORTUNE_TEXTS}
@@ -1502,22 +1504,26 @@ async def _extended_natal_core(chat_id: int, context: ContextTypes.DEFAULT_TYPE)
         p = ext.get(key)
         if p is None:
             continue
-        lines = [f"{point_label[key]} в {ac.SIGN_PREPOSITIONAL[p['sign']]}", "", point_sign_texts[key][p["sign"]]]
+        lines = [f"*{point_label[key]} в {ac.SIGN_PREPOSITIONAL[p['sign']]}*", "", point_sign_texts[key][p["sign"]]]
         if has_houses:
             house_num = ext["houses"][key]
             lines.append("")
             lines.append(point_house_texts[key][house_num])
-        await send_bot(context, chat_id, "\n".join(lines), 1.1)
+        lines.append("")
+        lines.append(ct2.PLANET_PRACTICE_TEXTS[key])
+        await send_bot(context, chat_id, "\n".join(lines), 1.3, parse_mode="Markdown")
 
     h = ac.harmony_score(ext)
     strongest = max(h["per_planet"], key=h["per_planet"].get)
     weakest = min(h["per_planet"], key=h["per_planet"].get)
     await send_bot(
         context, chat_id,
-        f"И главный вывод по гармонии карты: {planet_label[strongest]} у вас в самых слаженных аспектах с остальными "
-        f"планетами — это ваш надёжный источник силы. А {planet_label[weakest]} чаще в напряжении с другими "
-        f"планетами — с этой сферой стоит работать осознанно, не пускать на самотёк.",
-        1.8,
+        f"*Главный вывод по гармонии карты*\n\n"
+        f"{planet_label[strongest]} у вас в самых слаженных аспектах с остальными планетами — это ваш надёжный "
+        f"источник силы, на него стоит опираться в первую очередь, когда решение даётся тяжело.\n\n"
+        f"А {planet_label[weakest]} чаще в напряжении с другими планетами — с этой сферой стоит работать "
+        f"осознанно, не пускать на самотёк: именно там практика из разбора выше принесёт больше всего пользы.",
+        1.8, parse_mode="Markdown",
     )
 
     await send_menu(context, chat_id)
