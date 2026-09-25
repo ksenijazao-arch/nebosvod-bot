@@ -1471,11 +1471,7 @@ async def _extended_natal_core(chat_id: int, context: ContextTypes.DEFAULT_TYPE)
         "mars": "♂️ Марс", "jupiter": "♃ Юпитер", "saturn": "♄ Сатурн",
         "uranus": "♅ Уран", "neptune": "♆ Нептун", "pluto": "♇ Плутон",
     }
-    sign_texts_by_planet = {
-        "sun": ct.SUN_TEXTS, "moon": ct.MOON_TEXTS, "mercury": ct.MERCURY_TEXTS, "venus": ct.VENUS_TEXTS,
-        "mars": ct.MARS_TEXTS, "jupiter": ct.JUPITER_TEXTS, "saturn": ct.SATURN_TEXTS,
-        "uranus": ct2.URANUS_TEXTS, "neptune": ct2.NEPTUNE_TEXTS, "pluto": ct2.PLUTO_TEXTS,
-    }
+    sign_texts_by_planet = ct2.EXT_SIGN_TEXTS
 
     for key in planet_order:
         p = ext[key]
