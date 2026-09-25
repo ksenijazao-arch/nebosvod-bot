@@ -37,6 +37,7 @@ import astro_calc as ac
 import content as ct
 import content_extended as ct2
 import gauge
+import wheel
 
 DATABASE_URL = os.environ.get("DATABASE_URL")
 BROADCAST_PASSWORD = os.environ.get("BROADCAST_PASSWORD", "")
@@ -1464,6 +1465,17 @@ async def _extended_natal_core(chat_id: int, context: ContextTypes.DEFAULT_TYPE)
     has_houses = ext["houses"] is not None
 
     await send_bot(context, chat_id, "Собираю расширенный разбор — десять планет и три дополнительные точки…", 1.0)
+
+    wheel_path = os.path.join("/tmp", f"wheel_{chat_id}.png")
+    lons = {key: ac.SIGNS.index(ext[key]["sign"]) * 30 + ext[key]["deg"] for key in ac.EXTENDED_PLANET_KEYS}
+    asc_lon = ac.ascendant(chart["birth_jd"], chart["city"]["lat"], chart["city"]["lon"]) if has_houses else 0
+    wheel.render_natal_wheel(lons, asc_lon, ac.harmony_score(ext)["pairs"], wheel_path, has_houses=has_houses)
+    with open(wheel_path, "rb") as f:
+        await context.bot.send_photo(chat_id=chat_id, photo=f)
+    try:
+        os.remove(wheel_path)
+    except OSError:
+        pass
 
     planet_order = ac.EXTENDED_PLANET_KEYS
     planet_label = {
