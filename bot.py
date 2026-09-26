@@ -20,6 +20,7 @@ import random
 import re
 import threading
 import urllib.error
+import urllib.parse
 import urllib.request
 import uuid
 from datetime import date, timedelta
@@ -45,8 +46,8 @@ BROADCAST_PASSWORD = os.environ.get("BROADCAST_PASSWORD", "")
 YOOKASSA_SHOP_ID = os.environ.get("YOOKASSA_SHOP_ID", "")
 YOOKASSA_SECRET_KEY = os.environ.get("YOOKASSA_SECRET_KEY", "")
 
-FEATURE_PRICE = {"tomorrow": 100, "compat": 199, "numerology": 99, "money_ritual": 99, "extended_natal": 249}
-FEATURE_LABEL = {"tomorrow": "«Что ждёт меня завтра» на сутки", "compat": "разбор совместимости", "numerology": "число жизненного пути", "money_ritual": "денежный ритуал по карте", "extended_natal": "расширенный разбор натальной карты"}
+FEATURE_PRICE = {"tomorrow": 100, "compat": 199, "numerology": 99, "money_ritual": 99, "extended_natal": 249, "compat_numerology": 129, "compat_month": 149}
+FEATURE_LABEL = {"tomorrow": "«Что ждёт меня завтра» на сутки", "compat": "разбор совместимости", "numerology": "число жизненного пути", "money_ritual": "денежный ритуал по карте", "extended_natal": "расширенный разбор натальной карты", "compat_numerology": "числовая формула пары", "compat_month": "прогноз на месяц для пары"}
 
 
 def db_connect():
@@ -427,6 +428,10 @@ async def payment_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await _money_ritual_core(chat_id, context)
         elif feature == "extended_natal":
             await _extended_natal_core(chat_id, context)
+        elif feature == "compat_numerology":
+            await _compat_numerology_core(chat_id, context)
+        elif feature == "compat_month":
+            await _compat_month_core(chat_id, context)
     elif status in ("pending", "waiting_for_capture"):
         await context.bot.send_message(
             chat_id=chat_id,
@@ -463,6 +468,10 @@ SPHERE_CB_PREFIX = "sphere:"
 UNLIVED_CB = "unlived"
 HARMONY_CB = "harmony"
 EXTENDED_NATAL_CB = "extended_natal"
+COMPAT_NUMEROLOGY_CB = "compat_numerology"
+COMPAT_MONTH_CB = "compat_month"
+SHARE_STORY_CB = "share_story"
+SIGN_CHECK_CB = "sign_check_start"
 CATEGORY_CHART_CB = "cat_chart"
 CATEGORY_MONEY_CB = "cat_money"
 CATEGORY_LOVE_CB = "cat_love"
@@ -732,6 +741,7 @@ async def deliver_synastry(update: Update, context: ContextTypes.DEFAULT_TYPE, c
         lines.append(f"{label}. {headline(aspect)}\n{text}")
         summary_entries.append((label, aspect, f"{key_a}_{key_b}"))
 
+    venus_mars_aspect = "none"
     for key_a, key_b, label, content_key in ct.SYNASTRY_CROSS_PAIRS:
         aspect1 = ac.natal_aspect(ac.point_lon(chart[key_a]), ac.point_lon(partner_chart[key_b]))
         aspect2 = ac.natal_aspect(ac.point_lon(chart[key_b]), ac.point_lon(partner_chart[key_a]))
@@ -745,6 +755,8 @@ async def deliver_synastry(update: Update, context: ContextTypes.DEFAULT_TYPE, c
                 f"И в обратную сторону, {headline(aspect2)}: {text2}"
             )
         summary_entries.append((label, aspect1, content_key))
+        if content_key == "venus_mars":
+            venus_mars_aspect = aspect1
 
     if chart["has_time"] and chart["rising"] and partner_chart["has_time"] and partner_chart["rising"]:
         asc_aspect = ac.natal_aspect(ac.point_lon(chart["rising"]), ac.point_lon(partner_chart["rising"]))
@@ -766,6 +778,13 @@ async def deliver_synastry(update: Update, context: ContextTypes.DEFAULT_TYPE, c
     compat_percent = 50 if hi_score <= lo_score else round((raw_score - lo_score) / (hi_score - lo_score) * 100)
     compat_percent = max(0, min(100, compat_percent))
 
+    # сохраняем для кросс-продаж (числовая формула, прогноз на месяц) и шеринга,
+    # чтобы не пересчитывать карту партнёра заново
+    context.user_data["partner_chart"] = partner_chart
+    context.user_data["compat_percent"] = compat_percent
+    context.user_data["compat_harmonious_count"] = harmonious_count
+    context.user_data["compat_total_count"] = total_count
+
     gauge_path = os.path.join("/tmp", f"compat_{chat_id}.png")
     gauge.render_compatibility_gauge(compat_percent, harmonious_count, total_count, gauge_path)
     with open(gauge_path, "rb") as f:
@@ -775,6 +794,13 @@ async def deliver_synastry(update: Update, context: ContextTypes.DEFAULT_TYPE, c
     except OSError:
         pass
     await send_bot(context, chat_id, ct2.compat_level_text(compat_percent), 1.8)
+
+    heat = ct2.VENUS_MARS_HEAT[venus_mars_aspect]
+    await send_bot(
+        context, chat_id,
+        f"🔥 Отдельно про химию притяжения: {heat}/10\n\n{ct2.VENUS_MARS_SPOTLIGHT[venus_mars_aspect]}",
+        1.8,
+    )
 
     summary_parts = [f"📊 По цифрам: {harmonious_count} {ac.axis_word(harmonious_count)} из {total_count} гармоничные."]
     if strengths:
@@ -786,8 +812,190 @@ async def deliver_synastry(update: Update, context: ContextTypes.DEFAULT_TYPE, c
     advice_key = growth[0][1] if growth else "fallback"
     await send_bot(context, chat_id, f"📝 Совет на эту неделю: {ct.SYNASTRY_WEEKLY_ADVICE[advice_key]}", 1.3)
 
+    share_url = "https://t.me/share/url?url=" + urllib.parse.quote(
+        "https://t.me/nebosvod_astro_bot?start=compat_share"
+    ) + "&text=" + urllib.parse.quote(
+        f"Прошла разбор совместимости в Небосводе — {compat_percent}%. Проверь свою пару 👇"
+    )
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton(f"🔢 Числовая формула вашей пары — {FEATURE_PRICE['compat_numerology']} ₽", callback_data=COMPAT_NUMEROLOGY_CB)],
+        [InlineKeyboardButton(f"🌙 Прогноз на месяц для пары — {FEATURE_PRICE['compat_month']} ₽", callback_data=COMPAT_MONTH_CB)],
+        [InlineKeyboardButton("📲 Картинка для сторис", callback_data=SHARE_STORY_CB)],
+        [InlineKeyboardButton("↗️ Отправить другу / партнёру", url=share_url)],
+    ])
+    await context.bot.send_message(
+        chat_id=chat_id,
+        text="Можно копнуть глубже или просто похвастаться результатом:",
+        reply_markup=keyboard,
+    )
+
     await send_menu(context, chat_id)
     return ConversationHandler.END
+
+
+async def compat_numerology(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    await _compat_numerology_core(query.message.chat_id, context)
+
+
+async def _compat_numerology_core(chat_id: int, context: ContextTypes.DEFAULT_TYPE):
+    date_str = context.user_data.get("date_str")
+    partner_date_str = context.user_data.get("partner_date_str")
+    if not date_str or not partner_date_str:
+        await context.bot.send_message(chat_id=chat_id, text="Сначала пройдите разбор совместимости: /start")
+        return
+    if not await payment_gate(chat_id, context, "compat_numerology"):
+        return
+    y1, m1, d1 = (int(x) for x in date_str.split("-"))
+    y2, m2, d2 = (int(x) for x in partner_date_str.split("-"))
+    n1 = ac.life_path_number(d1, m1, y1)
+    n2 = ac.life_path_number(d2, m2, y2)
+    await send_bot(context, chat_id, "Считаю числа жизненного пути для вас двоих…", 0.9)
+    await send_bot(context, chat_id, ct2.compat_numerology_text(n1, n2), 1.8)
+    await send_menu(context, chat_id)
+
+
+async def compat_month(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    await _compat_month_core(query.message.chat_id, context)
+
+
+async def _compat_month_core(chat_id: int, context: ContextTypes.DEFAULT_TYPE):
+    chart = context.user_data.get("chart")
+    partner_chart = context.user_data.get("partner_chart")
+    if not chart or not partner_chart:
+        await context.bot.send_message(chat_id=chat_id, text="Сначала пройдите разбор совместимости: /start")
+        return
+    if not await payment_gate(chat_id, context, "compat_month"):
+        return
+
+    await send_bot(context, chat_id, "Смотрю транзиты Венеры и Марса на ближайший месяц…", 1.0)
+
+    now_jd = ac.to_jd(date.today().year, date.today().month, date.today().day, 0, 0)
+    points = [
+        ("sun", "me", ac.point_lon(chart["sun"])),
+        ("venus", "me", ac.point_lon(chart["venus"])),
+        ("sun", "partner", ac.point_lon(partner_chart["sun"])),
+        ("venus", "partner", ac.point_lon(partner_chart["venus"])),
+    ]
+    candidates = []
+    for transit_planet in ("venus", "mars"):
+        for point_key, who, lon in points:
+            for hit in ac.find_transit_hits(lon, transit_planet, now_jd, 30):
+                candidates.append({
+                    "transit_planet": transit_planet,
+                    "aspect_key": hit["aspect_key"],
+                    "day_offset": hit["day_offset"],
+                    "point_key": point_key,
+                    "who": who,
+                })
+
+    if not candidates:
+        await send_bot(
+            context, chat_id,
+            "В ближайший месяц Венера и Марс проходят мимо ваших ключевых точек без выраженных аспектов — "
+            "спокойный, ровный период без резких скачков в паре, ни ярких всплесков, ни трудных дней.",
+            1.6,
+        )
+        await send_menu(context, chat_id)
+        return
+
+    best = min(candidates, key=lambda c: c["day_offset"])
+    event_jd = now_jd + best["day_offset"]
+    ey, em, ed = ac.jd_to_ymd(event_jd)
+    date_label = f"{ed} {MONTHS_GEN[em - 1]}"
+    target_label = ct2.MONTH_TARGET_INSTR[(best["point_key"], best["who"])]
+
+    await send_bot(context, chat_id, ct2.MONTH_PAIR_INTRO, 1.4)
+    intro_line = (
+        f"{ct2.TRANSIT_PLANET_PHRASE[best['transit_planet']]} образует "
+        f"{ct2.ASPECT_ACC[best['aspect_key']]} {target_label} — ориентировочно {date_label}."
+    )
+    body = ct2.MONTH_PAIR_TEXTS[(best["transit_planet"], best["aspect_key"])]
+    await send_bot(context, chat_id, intro_line + "\n\n" + body, 1.8)
+    await send_menu(context, chat_id)
+
+
+async def share_story(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    chat_id = query.message.chat_id
+    percent = context.user_data.get("compat_percent")
+    if percent is None:
+        await context.bot.send_message(chat_id=chat_id, text="Сначала пройдите разбор совместимости: /start")
+        return
+    story_path = os.path.join("/tmp", f"compat_story_{chat_id}.png")
+    gauge.render_compatibility_story(percent, story_path)
+    with open(story_path, "rb") as f:
+        await context.bot.send_photo(
+            chat_id=chat_id, photo=f,
+            caption="Сохраните и выложите в сторис — пусть и другие проверят свою пару 💫",
+        )
+    try:
+        os.remove(story_path)
+    except OSError:
+        pass
+
+
+def sign_keyboard(prefix):
+    rows, row = [], []
+    for i, sign in enumerate(ac.SIGNS, 1):
+        row.append(InlineKeyboardButton(sign, callback_data=f"{prefix}:{sign}"))
+        if i % 3 == 0:
+            rows.append(row)
+            row = []
+    if row:
+        rows.append(row)
+    return InlineKeyboardMarkup(rows)
+
+
+async def sign_check_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    await context.bot.send_message(
+        chat_id=query.message.chat_id,
+        text="Быстрая проверка по знаку Солнца — без даты и времени, только сами знаки. Ваш знак:",
+        reply_markup=sign_keyboard("sc_a"),
+    )
+
+
+async def sign_check_a(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    context.user_data["sc_sign_a"] = query.data.split(":", 1)[1]
+    await context.bot.send_message(
+        chat_id=query.message.chat_id,
+        text="Теперь знак партнёра:",
+        reply_markup=sign_keyboard("sc_b"),
+    )
+
+
+async def sign_check_b(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    chat_id = query.message.chat_id
+    sign_a = context.user_data.get("sc_sign_a")
+    sign_b = query.data.split(":", 1)[1]
+    if not sign_a:
+        await context.bot.send_message(chat_id=chat_id, text="Начните заново: нажмите «Быстрая проверка по знаку».")
+        return
+    key = ct2.element_pair_key(sign_a, sign_b, ac.ELEMENT_OF_SIGN)
+    e1, e2 = ac.ELEMENT_OF_SIGN[sign_a], ac.ELEMENT_OF_SIGN[sign_b]
+    await context.bot.send_message(
+        chat_id=chat_id,
+        text=f"{sign_a} ({ct2.ELEMENT_RU[e1]}) и {sign_b} ({ct2.ELEMENT_RU[e2]}):\n\n{ct2.ELEMENT_PAIR_TEXTS[key]}",
+    )
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton(f"💞 Полный разбор по датам рождения — {FEATURE_PRICE['compat']} ₽", callback_data=COMPAT_CB)],
+    ])
+    await context.bot.send_message(
+        chat_id=chat_id,
+        text="Это только по знаку Солнца — самый грубый срез, какой вообще бывает в астрологии. "
+             "Полный разбор смотрит на десять точек карты у каждого из вас, а не на одну.",
+        reply_markup=keyboard,
+    )
 
 
 async def numerology(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1124,6 +1332,7 @@ async def category_love(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     kb = category_keyboard([
         ("❤️ Разбор сферы отношений — бесплатно", f"{SPHERE_CB_PREFIX}love"),
+        ("💫 Быстрая проверка по знаку — бесплатно", SIGN_CHECK_CB),
         ("💞 Совместимость с партнёром, 199 ₽", COMPAT_CB),
     ])
     await context.bot.send_message(
@@ -1914,7 +2123,13 @@ def main():
     application.add_handler(CallbackQueryHandler(money_ritual, pattern=f"^{MONEY_RITUAL_CB}$"))
     application.add_handler(CallbackQueryHandler(tomorrow_western, pattern=f"^{TOMORROW_WESTERN_CB}$"))
     application.add_handler(CallbackQueryHandler(tomorrow_choghadiya, pattern=f"^{TOMORROW_CHOGHADIYA_CB}$"))
-    application.add_handler(CallbackQueryHandler(payment_confirm, pattern="^paycheck:(numerology|tomorrow|money_ritual|extended_natal)$"))
+    application.add_handler(CallbackQueryHandler(payment_confirm, pattern="^paycheck:(numerology|tomorrow|money_ritual|extended_natal|compat_numerology|compat_month)$"))
+    application.add_handler(CallbackQueryHandler(compat_numerology, pattern=f"^{COMPAT_NUMEROLOGY_CB}$"))
+    application.add_handler(CallbackQueryHandler(compat_month, pattern=f"^{COMPAT_MONTH_CB}$"))
+    application.add_handler(CallbackQueryHandler(share_story, pattern=f"^{SHARE_STORY_CB}$"))
+    application.add_handler(CallbackQueryHandler(sign_check_start, pattern=f"^{SIGN_CHECK_CB}$"))
+    application.add_handler(CallbackQueryHandler(sign_check_a, pattern="^sc_a:"))
+    application.add_handler(CallbackQueryHandler(sign_check_b, pattern="^sc_b:"))
     application.add_handler(CommandHandler("broadcast", broadcast))
     application.add_handler(CommandHandler("stats", stats))
     application.add_handler(CommandHandler("reply", reply_to_user))

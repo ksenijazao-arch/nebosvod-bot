@@ -178,3 +178,62 @@ def render_compatibility_gauge(percent, harmonious_count, total_count, out_path,
 
     img.save(out_path)
     return out_path
+
+
+def render_compatibility_story(percent, out_path, width=1080, height=1920):
+    """Вертикальная версия спидометра совместимости под формат историй
+    (Instagram/Telegram, 9:16) — для шеринга результата. Тот же фирменный
+    стиль, гейдж крупнее и выше, снизу — призыв проверить свою пару."""
+    img = Image.new("RGB", (width, height), BG)
+    draw = ImageDraw.Draw(img)
+
+    cx = width // 2
+    cy = int(height * 0.46)
+    r_outer = int(width * 0.42)
+    r_inner = int(width * 0.30)
+
+    lo, hi = 0.0, 100.0
+    zones = [(lo, 40.0, RED), (40.0, 70.0, YELLOW), (70.0, hi, GREEN)]
+    for zlo, zhi, color in zones:
+        a_start = _value_to_angle(zlo, lo, hi)
+        a_end = _value_to_angle(zhi, lo, hi)
+        draw.pieslice([cx - r_outer, cy - r_outer, cx + r_outer, cy + r_outer], start=a_start, end=a_end, fill=color)
+    draw.pieslice([cx - r_inner, cy - r_inner, cx + r_inner, cy + r_inner], 0, 360, fill=BG)
+
+    tick_font = _font(26)
+    for v in range(0, 101, 20):
+        angle = _value_to_angle(v, lo, hi)
+        x1, y1 = _polar(cx, cy, r_inner - 4, angle)
+        x2, y2 = _polar(cx, cy, r_outer + 4, angle)
+        draw.line([x1, y1, x2, y2], fill=BG, width=5)
+        lx, ly = _polar(cx, cy, r_outer + 40, angle)
+        label = str(v)
+        bbox = draw.textbbox((0, 0), label, font=tick_font)
+        draw.text((lx - (bbox[2] - bbox[0]) / 2, ly - (bbox[3] - bbox[1]) / 2), label, font=tick_font, fill=WHITE)
+
+    clamped = _clamp(percent, lo, hi)
+    needle_angle = _value_to_angle(clamped, lo, hi)
+    needle_len = r_outer - 24
+    nx, ny = _polar(cx, cy, needle_len, needle_angle)
+    perp = needle_angle + 90
+    base_w = 11
+    bx1, by1 = _polar(cx, cy, base_w, perp)
+    bx2, by2 = _polar(cx, cy, base_w, perp + 180)
+    draw.polygon([(bx1, by1), (nx, ny), (bx2, by2)], fill=NEEDLE)
+    hub_r = 19
+    draw.ellipse([cx - hub_r, cy - hub_r, cx + hub_r, cy + hub_r], fill=GOLD)
+
+    score_font = _font(96, bold=True)
+    _centered_text(draw, cx, cy + 50, f"{round(clamped)}%", score_font, WHITE)
+
+    title_font = _font(46, bold=True)
+    _centered_text(draw, width / 2, 130, "♥ Совместимость", title_font, GOLD)
+    _centered_text(draw, width / 2, 190, "наших карт", title_font, GOLD)
+
+    cta_font = _font(34, bold=True)
+    sub_font = _font(28)
+    _centered_text(draw, width / 2, height - 220, "Проверь свою пару бесплатно", cta_font, WHITE)
+    _centered_text(draw, width / 2, height - 170, "@nebosvod_astro_bot", sub_font, GOLD)
+
+    img.save(out_path)
+    return out_path
