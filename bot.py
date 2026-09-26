@@ -1520,6 +1520,7 @@ async def _extended_natal_core(chat_id: int, context: ContextTypes.DEFAULT_TYPE)
     has_houses = ext["houses"] is not None
     h = ac.harmony_score(ext)
 
+    await send_bot(context, chat_id, ct2.EXTENDED_METHODOLOGY_TEXT, 1.6, parse_mode="Markdown")
     await send_bot(context, chat_id, "Собираю расширенный разбор — десять планет и три дополнительные точки…", 1.0)
 
     wheel_path = os.path.join("/tmp", f"wheel_{chat_id}.png")
