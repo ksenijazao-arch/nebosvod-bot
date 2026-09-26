@@ -760,6 +760,22 @@ async def deliver_synastry(update: Update, context: ContextTypes.DEFAULT_TYPE, c
     harmonious_count = len(strengths)
     total_count = len(summary_entries)
 
+    compat_weight = {"conjunction": 1.0, "trine": 0.85, "square": -0.55, "opposition": -0.75, "none": 0.1}
+    raw_score = sum(compat_weight[aspect] for _, aspect, _ in summary_entries)
+    lo_score, hi_score = -0.75 * total_count, 1.0 * total_count
+    compat_percent = 50 if hi_score <= lo_score else round((raw_score - lo_score) / (hi_score - lo_score) * 100)
+    compat_percent = max(0, min(100, compat_percent))
+
+    gauge_path = os.path.join("/tmp", f"compat_{chat_id}.png")
+    gauge.render_compatibility_gauge(compat_percent, harmonious_count, total_count, gauge_path)
+    with open(gauge_path, "rb") as f:
+        await context.bot.send_photo(chat_id=chat_id, photo=f)
+    try:
+        os.remove(gauge_path)
+    except OSError:
+        pass
+    await send_bot(context, chat_id, ct2.compat_level_text(compat_percent), 1.8)
+
     summary_parts = [f"📊 По цифрам: {harmonious_count} {ac.axis_word(harmonious_count)} из {total_count} гармоничные."]
     if strengths:
         summary_parts.append("🌟 Сильные стороны этой пары: " + ", ".join(l for l, k in strengths[:3]) + ".")

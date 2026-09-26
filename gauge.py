@@ -111,3 +111,70 @@ def render_harmony_gauge(score, planets_in_harmony, out_path, width=900, height=
 
     img.save(out_path)
     return out_path
+
+
+def render_compatibility_gauge(percent, harmonious_count, total_count, out_path, width=900, height=700):
+    """Спидометр совместимости двух карт — 0-100%, тот же фирменный стиль
+    (тёмно-синий + золото), что и у гейджа гармонии, но своя шкала и зоны:
+    красная/жёлтая/зелёная зона по проценту, а не по баллу -10..10."""
+    img = Image.new("RGB", (width, height), BG)
+    draw = ImageDraw.Draw(img)
+
+    cx = width // 2
+    cy = int(height * 0.68)
+    r_outer = int(width * 0.40)
+    r_inner = int(width * 0.29)
+
+    lo, hi = 0.0, 100.0
+    zones = [
+        (lo, 40.0, RED),
+        (40.0, 70.0, YELLOW),
+        (70.0, hi, GREEN),
+    ]
+    for zlo, zhi, color in zones:
+        a_start = _value_to_angle(zlo, lo, hi)
+        a_end = _value_to_angle(zhi, lo, hi)
+        draw.pieslice(
+            [cx - r_outer, cy - r_outer, cx + r_outer, cy + r_outer],
+            start=a_start, end=a_end, fill=color,
+        )
+    draw.pieslice([cx - r_inner, cy - r_inner, cx + r_inner, cy + r_inner], 0, 360, fill=BG)
+
+    tick_font = _font(22)
+    for v in range(0, 101, 20):
+        angle = _value_to_angle(v, lo, hi)
+        x1, y1 = _polar(cx, cy, r_inner - 4, angle)
+        x2, y2 = _polar(cx, cy, r_outer + 4, angle)
+        draw.line([x1, y1, x2, y2], fill=BG, width=4)
+        lx, ly = _polar(cx, cy, r_outer + 34, angle)
+        label = str(v)
+        bbox = draw.textbbox((0, 0), label, font=tick_font)
+        draw.text((lx - (bbox[2] - bbox[0]) / 2, ly - (bbox[3] - bbox[1]) / 2), label, font=tick_font, fill=WHITE)
+
+    clamped = _clamp(percent, lo, hi)
+    needle_angle = _value_to_angle(clamped, lo, hi)
+    needle_len = r_outer - 20
+    nx, ny = _polar(cx, cy, needle_len, needle_angle)
+    perp = needle_angle + 90
+    base_w = 9
+    bx1, by1 = _polar(cx, cy, base_w, perp)
+    bx2, by2 = _polar(cx, cy, base_w, perp + 180)
+    draw.polygon([(bx1, by1), (nx, ny), (bx2, by2)], fill=NEEDLE)
+    hub_r = 15
+    draw.ellipse([cx - hub_r, cy - hub_r, cx + hub_r, cy + hub_r], fill=GOLD)
+
+    score_font = _font(58, bold=True)
+    _centered_text(draw, cx, cy + 36, f"{round(clamped)}%", score_font, WHITE)
+
+    title_font = _font(32, bold=True)
+    _centered_text(draw, width / 2, 28, "♥ Совместимость ваших карт", title_font, GOLD)
+
+    sub_font = _font(24)
+    _centered_text(
+        draw, width / 2, height - 46,
+        f"Гармоничных связей между картами: {harmonious_count} из {total_count}",
+        sub_font, WHITE,
+    )
+
+    img.save(out_path)
+    return out_path
