@@ -1613,75 +1613,112 @@ async def unlived(update: Update, context: ContextTypes.DEFAULT_TYPE):
     house_num = ac.house_of_sign(chart["north_node"]["sign"], chart["rising"]["sign"])
     saturn_sentence = f"Ваш Сатурн в {ac.SIGN_PREPOSITIONAL[chart['saturn']['sign']]} показывает, что вы способны {ct.SATURN_MAGNITUDE[chart['saturn']['sign']]}."
     potential = ct.HOUSE_POTENTIAL[str(house_num)].format(saturn=saturn_sentence)
-    vision = ct.NODE_VISIONS[chart["north_node"]["sign"]]
+    parallel_now = ct2.UNLIVED_PARALLEL_NOW[chart["north_node"]["sign"]]
     validation = ct.VALIDATION[str(house_num)]
     advice1 = ct.HOUSE_RETURN_ADVICE[str(house_num)]
     advice2 = ct.HOUSE_RETURN_ADVICE_2[str(house_num)]
+    tie = ct2.UNLIVED_TIE[str(house_num)]
+    birth_jd = chart["birth_jd"]
 
+    # 1. приметы — узнаёт ли человек себя вообще
     await send_bot(
         context, chat_id,
         "Прежде чем говорить о карте — вот как это обычно ощущается в жизни, ещё до всякой астрологии. "
         "Посмотрите, откликается ли хоть что-то:\n\n" + ct2.UNLIVED_SIGNS[str(house_num)],
         2.2,
     )
+
+    # 2. почему — корень паттерна
     await send_bot(
         context, chat_id,
         "Если хоть одно из этого — про вас, вот что за этим стоит в вашей карте.\n\n" + potential,
         2.2,
     )
-    await send_bot(context, chat_id, f"А если бы вы тогда выбрали иначе: {vision}\n\n{validation}", 2.0)
-    await send_bot(context, chat_id, f"✅ Что можно сделать уже сейчас:\n1. {advice1}\n2. {advice2}", 1.6)
 
+    # 3. когда — реальная развилка в прошлом (транзит Сатурна на узел), если она уже случилась
     now = ac.to_jd(date.today().year, date.today().month, date.today().day, 0, 0)
+    lifespan_days = int(now - birth_jd)
+    by, bm, bd = ac.jd_to_ymd(birth_jd)
+    past_age = None
+    if lifespan_days > 0:
+        past_hits = ac.find_transit_hits(chart["north_node_lon"], "saturn", birth_jd, lifespan_days)
+        major_past = [h for h in past_hits if h["aspect_key"] in ("conjunction", "opposition")]
+        if major_past:
+            last = major_past[-1]
+            event_jd = birth_jd + last["day_offset"]
+            ey, em, _ = ac.jd_to_ymd(event_jd)
+            past_age = ey - by - (1 if (em, 1) < (bm, bd) else 0)
+            month_year = f"{ct.MONTHS_PREP[em - 1]} {ey}"
+            template = ct.NODE_SATURN_PAST[last["aspect_key"]]
+            await send_bot(
+                context, chat_id,
+                template.format(age=past_age, year_word=ac.year_word(past_age), month_year=month_year, tie=tie),
+                2.4,
+            )
+    if past_age is None:
+        await send_bot(
+            context, chat_id,
+            "У большинства людей эта развилка уже случилась в прошлом — Сатурн успевает дойти до узла в "
+            "молодости. В вашем случае он до него ещё не дошёл: значит, самая мощная развилка не позади, а "
+            "впереди. Дальше расскажу, когда именно.",
+            1.8,
+        )
+
+    # 4. кто — параллельная версия прямо сейчас
+    await send_bot(context, chat_id, "А вот какая вы сейчас в той реальности, где тогда выбрали иначе.", 1.0)
+    await send_bot(context, chat_id, parallel_now, 2.0)
+
+    # 5. где — географическая точка, реально вычисленная по моменту рождения
+    mc_lon = ac.mc_line_longitude(chart["north_node_lon"], birth_jd)
+    city_a, city_b = ac.nearest_astrocarto_cities(mc_lon, 2)
+    lon_label = f"{abs(round(mc_lon))}° {'в.д.' if mc_lon >= 0 else 'з.д.'}"
+    await send_bot(
+        context, chat_id,
+        f"И ещё кое-что неожиданное: в момент вашего рождения эта же точка карты стояла точно в зените "
+        f"неба над одним конкретным меридианом Земли — {lon_label} Он проходит рядом с {city_a} и "
+        f"{city_b}. Это реальный расчёт, не догадка: похоже, именно в ту сторону вас тянуло с самого "
+        f"начала. Если у этой параллельной реальности вообще есть географические координаты — она, "
+        f"скорее всего, где-то там.",
+        2.4,
+    )
+
+    # 6. ценность уже прожитого — чтобы не обесценить настоящую жизнь
+    await send_bot(context, chat_id, validation, 1.4)
+
+    # 7. шанс — ближайшее окно, когда легче сделать шаг в эту сторону
     power_hits = []
     for planet_key in ["mercury", "venus", "mars", "jupiter", "saturn"]:
         for t in ac.find_house_ingresses(planet_key, house_num, chart["rising"]["sign"], now, 730):
             power_hits.append({"planet_key": planet_key, "day_offset": t, "date_label": ac.jd_to_date_label(now + t)})
     power_hits.sort(key=lambda h: h["day_offset"])
-
     if power_hits:
         h = power_hits[0]
-        tie = ct2.UNLIVED_TIE[str(house_num)]
         await send_bot(
             context, chat_id,
-            f"🌟 И ещё одно: 📅 {h['date_label']}. {ct.PLANET_REASON[h['planet_key']]}, прямо там, где живёт этот нереализованный путь. "
+            f"Хорошая новость: граница между этими двумя реальностями не окончательная. 📅 {h['date_label']}. "
+            f"{ct.PLANET_REASON[h['planet_key']]}, прямо там, где живёт этот нереализованный путь. "
             f"Особенно легко в этот день сделать шаг в сторону {tie}. {ct.PLANET_WEIGHT[h['planet_key']]}",
-            1.4,
+            1.8,
         )
 
-    birth_jd = chart["birth_jd"]
-    lifespan_days = int(now - birth_jd)
-    if lifespan_days > 0:
-        past_hits = ac.find_transit_hits(chart["north_node_lon"], "saturn", birth_jd, lifespan_days)
-        major = [h for h in past_hits if h["aspect_key"] in ("conjunction", "opposition")]
-        if major:
-            last = major[-1]
-            event_jd = birth_jd + last["day_offset"]
-            ey, em, _ = ac.jd_to_ymd(event_jd)
-            by, bm, bd = ac.jd_to_ymd(birth_jd)
-            age = ey - by - (1 if (em, 1) < (bm, bd) else 0)
-            month_year = f"{ct.MONTHS_PREP[em - 1]} {ey}"
-            template = ct.NODE_SATURN_PAST[last["aspect_key"]]
-            await send_bot(
-                context, chat_id,
-                template.format(age=age, year_word=ac.year_word(age), month_year=month_year, tie=ct2.UNLIVED_TIE[str(house_num)]),
-                2.4,
-            )
+    # 8. что делать — конкретные шаги
+    await send_bot(context, chat_id, f"✅ Что можно сделать уже сейчас:\n1. {advice1}\n2. {advice2}", 1.6)
 
-        future_hits = ac.find_transit_hits(chart["north_node_lon"], "saturn", now, 6570)
-        future_major = [h for h in future_hits if h["aspect_key"] in ("conjunction", "opposition")]
-        if future_major:
-            nxt = future_major[0]
-            event_jd = now + nxt["day_offset"]
-            ey, em, _ = ac.jd_to_ymd(event_jd)
-            age = ey - by - (1 if (em, 1) < (bm, bd) else 0)
-            month_year = f"{ct.MONTHS_PREP[em - 1]} {ey}"
-            template = ct.NODE_SATURN_FUTURE[nxt["aspect_key"]]
-            await send_bot(
-                context, chat_id,
-                template.format(age=age, year_word=ac.year_word(age), month_year=month_year, tie=ct2.UNLIVED_TIE[str(house_num)]),
-                2.2,
-            )
+    # 9. следующая большая развилка (или первая, если прошлой ещё не было)
+    future_hits = ac.find_transit_hits(chart["north_node_lon"], "saturn", now, 6570)
+    future_major = [h for h in future_hits if h["aspect_key"] in ("conjunction", "opposition")]
+    if future_major:
+        nxt = future_major[0]
+        event_jd = now + nxt["day_offset"]
+        ey, em, _ = ac.jd_to_ymd(event_jd)
+        future_age = ey - by - (1 if (em, 1) < (bm, bd) else 0)
+        month_year = f"{ct.MONTHS_PREP[em - 1]} {ey}"
+        template = ct.NODE_SATURN_FUTURE[nxt["aspect_key"]]
+        await send_bot(
+            context, chat_id,
+            template.format(age=future_age, year_word=ac.year_word(future_age), month_year=month_year, tie=tie),
+            2.2,
+        )
 
     for planet_key in ["venus", "mars", "mercury", "jupiter", "saturn"]:
         if ac.is_retrograde(planet_key, birth_jd):
