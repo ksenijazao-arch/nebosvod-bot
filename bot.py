@@ -1610,6 +1610,10 @@ async def unlived(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await send_bot(context, chat_id, "Смотрю на узлы и Сатурн в вашей карте…", 1.0)
 
+    mc_lon = ac.mc_line_longitude(chart["north_node_lon"], chart["birth_jd"])
+    city_a, city_b = ac.nearest_astrocarto_cities(mc_lon, 2)
+    lon_label = f"{abs(round(mc_lon))}° {'в.д.' if mc_lon >= 0 else 'з.д.'}"
+
     house_num = ac.house_of_sign(chart["north_node"]["sign"], chart["rising"]["sign"])
     saturn_sentence = f"Ваш Сатурн в {ac.SIGN_PREPOSITIONAL[chart['saturn']['sign']]} показывает, что вы способны {ct.SATURN_MAGNITUDE[chart['saturn']['sign']]}."
     potential = ct.HOUSE_POTENTIAL[str(house_num)].format(saturn=saturn_sentence)
@@ -1620,9 +1624,12 @@ async def unlived(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await send_bot(
         context, chat_id,
-        "Есть в вашей карте одна конкретная точка — не метафора, а координаты — где записана версия вас, "
-        "которая тогда не испугалась. Вот что там видно.\n\n" + potential,
-        2.2,
+        f"Вот что можно посчитать по вашей карте, без метафор: в момент вашего рождения точка Северного "
+        f"узла стояла точно в зените неба над одним конкретным меридианом Земли — {lon_label} Эта линия "
+        f"проходит рядом с {city_a} и {city_b}.\n\n"
+        f"Дело не в переезде туда — а в том, что именно в этой географической точке та часть вас, о "
+        f"которой пойдёт речь, была бы ближе всего к поверхности. Вот что в ней скрыто.\n\n" + potential,
+        2.4,
     )
     await send_bot(context, chat_id, f"А если бы вы тогда выбрали иначе: {vision}\n\n{validation}", 2.0)
     await send_bot(context, chat_id, f"✅ Что можно сделать уже сейчас:\n1. {advice1}\n2. {advice2}", 1.6)
