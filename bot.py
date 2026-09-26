@@ -1641,11 +1641,11 @@ async def unlived(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if power_hits:
         h = power_hits[0]
-        tie = ct.HOUSE_INFO[house_num]["tie"]
+        tie = ct2.UNLIVED_TIE[str(house_num)]
         await send_bot(
             context, chat_id,
             f"🌟 И ещё одно: 📅 {h['date_label']}. {ct.PLANET_REASON[h['planet_key']]}, прямо там, где живёт этот нереализованный путь. "
-            f"Особенно легко в этот день повлиять на {tie}. {ct.PLANET_WEIGHT[h['planet_key']]}",
+            f"Особенно легко в этот день сделать шаг в сторону {tie}. {ct.PLANET_WEIGHT[h['planet_key']]}",
             1.4,
         )
 
@@ -1664,7 +1664,7 @@ async def unlived(update: Update, context: ContextTypes.DEFAULT_TYPE):
             template = ct.NODE_SATURN_PAST[last["aspect_key"]]
             await send_bot(
                 context, chat_id,
-                template.format(age=age, year_word=ac.year_word(age), month_year=month_year, tie=ct.HOUSE_INFO[house_num]["tie"]),
+                template.format(age=age, year_word=ac.year_word(age), month_year=month_year, tie=ct2.UNLIVED_TIE[str(house_num)]),
                 2.4,
             )
 
@@ -1679,7 +1679,7 @@ async def unlived(update: Update, context: ContextTypes.DEFAULT_TYPE):
             template = ct.NODE_SATURN_FUTURE[nxt["aspect_key"]]
             await send_bot(
                 context, chat_id,
-                template.format(age=age, year_word=ac.year_word(age), month_year=month_year, tie=ct.HOUSE_INFO[house_num]["tie"]),
+                template.format(age=age, year_word=ac.year_word(age), month_year=month_year, tie=ct2.UNLIVED_TIE[str(house_num)]),
                 2.2,
             )
 
