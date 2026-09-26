@@ -252,6 +252,11 @@ async def yookassa_check_payment(payment_id):
     return result.get("status") if result else None
 
 
+# ВРЕМЕННО: все платные функции открыты бесплатно для тестирования.
+# Чтобы вернуть оплату — поставь FREE_MODE = False.
+FREE_MODE = True
+
+
 async def payment_gate(chat_id: int, context: ContextTypes.DEFAULT_TYPE, feature: str) -> bool:
     """Проверяет доступ к платной функции. Если уже оплачено и действует,
     возвращает True, вызывающий код продолжает как обычно. Иначе сначала
@@ -259,6 +264,8 @@ async def payment_gate(chat_id: int, context: ContextTypes.DEFAULT_TYPE, feature
     при возврате после почты), затем спрашивает почту, если её ещё нет, и
     только потом создаёт платёж в ЮKassa. В обоих случаях, кроме успешного
     доступа, возвращает False, вызывающий код должен остановиться."""
+    if FREE_MODE:
+        return True
     if db_has_access(chat_id, feature):
         return True
 
