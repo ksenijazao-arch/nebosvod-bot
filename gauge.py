@@ -237,3 +237,59 @@ def render_compatibility_story(percent, out_path, width=1080, height=1920):
 
     img.save(out_path)
     return out_path
+
+
+# ---------- карточка «энергия двух знаков» — бесплатная мини-проверка по стихиям ----------
+
+SIGN_GLYPH = {
+    "Овен": "♈", "Телец": "♉", "Близнецы": "♊", "Рак": "♋", "Лев": "♌", "Дева": "♍",
+    "Весы": "♎", "Скорпион": "♏", "Стрелец": "♐", "Козерог": "♑", "Водолей": "♒", "Рыбы": "♓",
+}
+
+ELEMENT_COLOR = {
+    "fire": (214, 90, 58),
+    "earth": (122, 156, 88),
+    "air": (198, 184, 138),
+    "water": (78, 120, 168),
+}
+
+
+def render_sign_pair_card(sign_a, sign_b, element_a, element_b, resonance, out_path, width=1000, height=1000):
+    """Карточка взаимодействия двух знаков для бесплатной мини-проверки:
+    два зодиакальных символа в цвете своей стихии, связующая дуга цветом
+    резонанса (та же красная/жёлтая/зелёная логика, что в спидометрах), и
+    число резонанса стихий внизу. Формат квадратный — удобно шерить."""
+    img = Image.new("RGB", (width, height), BG)
+    draw = ImageDraw.Draw(img)
+
+    title_font = _font(44, bold=True)
+    _centered_text(draw, width / 2, 60, "✦ Энергия двух знаков", title_font, GOLD)
+
+    cx1, cx2 = int(width * 0.27), int(width * 0.73)
+    cy = int(height * 0.44)
+    r = int(width * 0.19)
+
+    zone_color = RED if resonance <= 40 else YELLOW if resonance <= 70 else GREEN
+    arc_y = cy
+    draw.line([(cx1 + r, arc_y), (cx2 - r, arc_y)], fill=zone_color, width=10)
+    heart_font = _font(46, bold=True)
+    _centered_text(draw, width / 2, arc_y - 30, "♥", heart_font, zone_color)
+
+    for cx, sign, element in [(cx1, sign_a, element_a), (cx2, sign_b, element_b)]:
+        color = ELEMENT_COLOR[element]
+        draw.ellipse([cx - r, cy - r, cx + r, cy + r], fill=color)
+        glyph_font = _font(int(r * 1.1))
+        bbox = draw.textbbox((0, 0), SIGN_GLYPH[sign], font=glyph_font)
+        gw, gh = bbox[2] - bbox[0], bbox[3] - bbox[1]
+        draw.text((cx - gw / 2 - bbox[0], cy - gh / 2 - bbox[1]), SIGN_GLYPH[sign], font=glyph_font, fill=WHITE)
+        name_font = _font(32, bold=True)
+        _centered_text(draw, cx, cy + r + 24, sign, name_font, GOLD)
+
+    res_font = _font(52, bold=True)
+    _centered_text(draw, width / 2, height - 160, f"Резонанс стихий: {resonance}", res_font, WHITE)
+
+    cta_font = _font(30)
+    _centered_text(draw, width / 2, height - 80, "Полный разбор пары → @nebosvod_astro_bot", cta_font, GOLD)
+
+    img.save(out_path)
+    return out_path

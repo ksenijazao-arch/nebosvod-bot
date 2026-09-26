@@ -981,11 +981,25 @@ async def sign_check_b(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not sign_a:
         await context.bot.send_message(chat_id=chat_id, text="Начните заново: нажмите «Быстрая проверка по знаку».")
         return
-    key = ct2.element_pair_key(sign_a, sign_b, ac.ELEMENT_OF_SIGN)
     e1, e2 = ac.ELEMENT_OF_SIGN[sign_a], ac.ELEMENT_OF_SIGN[sign_b]
-    await context.bot.send_message(
-        chat_id=chat_id,
-        text=f"{sign_a} ({ct2.ELEMENT_RU[e1]}) и {sign_b} ({ct2.ELEMENT_RU[e2]}):\n\n{ct2.ELEMENT_PAIR_TEXTS[key]}",
+    key = ct2.element_pair_key(sign_a, sign_b, ac.ELEMENT_OF_SIGN)
+    resonance = ct2.ELEMENT_PAIR_RESONANCE[key]
+
+    await send_bot(context, chat_id, f"Смотрю, как взаимодействуют {sign_a} и {sign_b}…", 0.8)
+
+    card_path = os.path.join("/tmp", f"signcard_{chat_id}.png")
+    gauge.render_sign_pair_card(sign_a, sign_b, e1, e2, resonance, card_path)
+    with open(card_path, "rb") as f:
+        await context.bot.send_photo(chat_id=chat_id, photo=f)
+    try:
+        os.remove(card_path)
+    except OSError:
+        pass
+
+    await send_bot(
+        context, chat_id,
+        f"{sign_a} ({ct2.ELEMENT_RU[e1]}) и {sign_b} ({ct2.ELEMENT_RU[e2]}):\n\n{ct2.ELEMENT_PAIR_TEXTS[key]}",
+        2.2,
     )
     keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton(f"💞 Полный разбор по датам рождения — {FEATURE_PRICE['compat']} ₽", callback_data=COMPAT_CB)],
