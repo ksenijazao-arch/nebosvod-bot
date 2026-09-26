@@ -46,8 +46,8 @@ BROADCAST_PASSWORD = os.environ.get("BROADCAST_PASSWORD", "")
 YOOKASSA_SHOP_ID = os.environ.get("YOOKASSA_SHOP_ID", "")
 YOOKASSA_SECRET_KEY = os.environ.get("YOOKASSA_SECRET_KEY", "")
 
-FEATURE_PRICE = {"tomorrow": 100, "compat": 199, "numerology": 99, "money_ritual": 99, "extended_natal": 249, "compat_numerology": 129, "compat_month": 149}
-FEATURE_LABEL = {"tomorrow": "«Что ждёт меня завтра» на сутки", "compat": "разбор совместимости", "numerology": "число жизненного пути", "money_ritual": "денежный ритуал по карте", "extended_natal": "расширенный разбор натальной карты", "compat_numerology": "числовая формула пары", "compat_month": "прогноз на месяц для пары"}
+FEATURE_PRICE = {"tomorrow": 100, "compat": 199, "numerology": 99, "money_ritual": 99, "extended_natal": 249, "compat_numerology": 129, "compat_month": 149, "unlived_plan": 149}
+FEATURE_LABEL = {"tomorrow": "«Что ждёт меня завтра» на сутки", "compat": "разбор совместимости", "numerology": "число жизненного пути", "money_ritual": "денежный ритуал по карте", "extended_natal": "расширенный разбор натальной карты", "compat_numerology": "числовая формула пары", "compat_month": "прогноз на месяц для пары", "unlived_plan": "план возврата к непрожитому пути"}
 
 
 def db_connect():
@@ -432,6 +432,8 @@ async def payment_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await _compat_numerology_core(chat_id, context)
         elif feature == "compat_month":
             await _compat_month_core(chat_id, context)
+        elif feature == "unlived_plan":
+            await _unlived_plan_core(chat_id, context)
     elif status in ("pending", "waiting_for_capture"):
         await context.bot.send_message(
             chat_id=chat_id,
@@ -470,6 +472,7 @@ HARMONY_CB = "harmony"
 EXTENDED_NATAL_CB = "extended_natal"
 COMPAT_NUMEROLOGY_CB = "compat_numerology"
 COMPAT_MONTH_CB = "compat_month"
+UNLIVED_PLAN_CB = "unlived_plan"
 SHARE_STORY_CB = "share_story"
 SIGN_CHECK_CB = "sign_check_start"
 CATEGORY_CHART_CB = "cat_chart"
@@ -1300,7 +1303,7 @@ def main_menu_keyboard():
         [InlineKeyboardButton(f"{SPHERE_EMOJI['career']} {ct.SPHERES['career']['title']}", callback_data=f"{SPHERE_CB_PREFIX}career")],
         [InlineKeyboardButton(f"{SPHERE_EMOJI['health']} {ct.SPHERES['health']['title']}", callback_data=f"{SPHERE_CB_PREFIX}health")],
         [InlineKeyboardButton("🔭 Узнать важные даты", callback_data=FORECAST_CB)],
-        [InlineKeyboardButton("✨ Непрожитые жизни", callback_data=UNLIVED_CB)],
+        [InlineKeyboardButton("✨ Жизнь, которую вы не прожили", callback_data=UNLIVED_CB)],
         [InlineKeyboardButton("🔢 Число жизненного пути, 99 ₽", callback_data=NUMEROLOGY_CB)],
         [InlineKeyboardButton("🌅 Что ждёт меня завтра, 100 ₽/сутки", callback_data=TOMORROW_CB)],
         [InlineKeyboardButton("🔄 Начать заново", callback_data=RESTART_CB)],
@@ -1617,8 +1620,8 @@ async def unlived(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await send_bot(
         context, chat_id,
-        "У каждого в карте есть путь, которым вы прошли, и путь, который звал, но остался в стороне. "
-        f"Вот что я вижу в вашем случае.\n\n{potential}",
+        "Есть в вашей карте одна конкретная точка — не метафора, а координаты — где записана версия вас, "
+        "которая тогда не испугалась. Вот что там видно.\n\n" + potential,
         2.2,
     )
     await send_bot(context, chat_id, f"А если бы вы тогда выбрали иначе: {vision}\n\n{validation}", 2.0)
@@ -1690,6 +1693,42 @@ async def unlived(update: Update, context: ContextTypes.DEFAULT_TYPE):
         1.3,
     )
 
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton(f"🔑 План возврата на 90 дней — {FEATURE_PRICE['unlived_plan']} ₽", callback_data=UNLIVED_PLAN_CB)],
+    ])
+    await context.bot.send_message(
+        chat_id=chat_id,
+        text="Увидеть эту дверь — не то же самое, что войти в неё. Если хотите не просто знать про этот "
+             "путь, а пройти его по шагам за три ближайших месяца:",
+        reply_markup=keyboard,
+    )
+
+    await send_menu(context, chat_id)
+
+
+async def unlived_plan(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    await _unlived_plan_core(query.message.chat_id, context)
+
+
+async def _unlived_plan_core(chat_id: int, context: ContextTypes.DEFAULT_TYPE):
+    chart = context.user_data.get("chart")
+    if not chart or not (chart["has_time"] and chart["rising"]):
+        await context.bot.send_message(chat_id=chat_id, text="Сначала пройдите разбор заново: /start")
+        return
+    if not await payment_gate(chat_id, context, "unlived_plan"):
+        return
+
+    house_num = ac.house_of_sign(chart["north_node"]["sign"], chart["rising"]["sign"])
+    phase1 = ct.HOUSE_RETURN_ADVICE[str(house_num)]
+    phase2 = ct.HOUSE_RETURN_ADVICE_2[str(house_num)]
+    phase3 = ct2.UNLIVED_PLAN_PHASE_3[str(house_num)]
+
+    await send_bot(context, chat_id, "Ваш план возврата к этому пути — на ближайшие три месяца, по дням не расписан, по результату — да.", 1.4)
+    await send_bot(context, chat_id, f"📍 Первые 30 дней\n{phase1}", 1.8)
+    await send_bot(context, chat_id, f"📍 Следующие 30 дней\n{phase2}", 1.8)
+    await send_bot(context, chat_id, f"📍 Последние 30 дней\n{phase3}", 1.8)
     await send_menu(context, chat_id)
 
 
@@ -2126,6 +2165,7 @@ def main():
     application.add_handler(CallbackQueryHandler(forecast, pattern=f"^{FORECAST_CB}$"))
     application.add_handler(CallbackQueryHandler(sphere, pattern=f"^{SPHERE_CB_PREFIX}"))
     application.add_handler(CallbackQueryHandler(unlived, pattern=f"^{UNLIVED_CB}$"))
+    application.add_handler(CallbackQueryHandler(unlived_plan, pattern=f"^{UNLIVED_PLAN_CB}$"))
     application.add_handler(CallbackQueryHandler(harmony, pattern=f"^{HARMONY_CB}$"))
     application.add_handler(CallbackQueryHandler(extended_natal, pattern=f"^{EXTENDED_NATAL_CB}$"))
     application.add_handler(CallbackQueryHandler(category_chart, pattern=f"^{CATEGORY_CHART_CB}$"))
@@ -2137,7 +2177,7 @@ def main():
     application.add_handler(CallbackQueryHandler(money_ritual, pattern=f"^{MONEY_RITUAL_CB}$"))
     application.add_handler(CallbackQueryHandler(tomorrow_western, pattern=f"^{TOMORROW_WESTERN_CB}$"))
     application.add_handler(CallbackQueryHandler(tomorrow_choghadiya, pattern=f"^{TOMORROW_CHOGHADIYA_CB}$"))
-    application.add_handler(CallbackQueryHandler(payment_confirm, pattern="^paycheck:(numerology|tomorrow|money_ritual|extended_natal|compat_numerology|compat_month)$"))
+    application.add_handler(CallbackQueryHandler(payment_confirm, pattern="^paycheck:(numerology|tomorrow|money_ritual|extended_natal|compat_numerology|compat_month|unlived_plan)$"))
     application.add_handler(CallbackQueryHandler(compat_numerology, pattern=f"^{COMPAT_NUMEROLOGY_CB}$"))
     application.add_handler(CallbackQueryHandler(compat_month, pattern=f"^{COMPAT_MONTH_CB}$"))
     application.add_handler(CallbackQueryHandler(share_story, pattern=f"^{SHARE_STORY_CB}$"))
