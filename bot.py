@@ -42,14 +42,16 @@ import wheel
 import cards
 import daily
 import venus_retro
+import oracle
+import matrix
 
 DATABASE_URL = os.environ.get("DATABASE_URL")
 BROADCAST_PASSWORD = os.environ.get("BROADCAST_PASSWORD", "")
 YOOKASSA_SHOP_ID = os.environ.get("YOOKASSA_SHOP_ID", "")
 YOOKASSA_SECRET_KEY = os.environ.get("YOOKASSA_SECRET_KEY", "")
 
-FEATURE_PRICE = {"venus_retro": 249, "tomorrow": 100, "compat": 199, "numerology": 99, "money_ritual": 99, "extended_natal": 249, "compat_numerology": 129, "compat_month": 149}
-FEATURE_LABEL = {"venus_retro": "персональный разбор ретроградной Венеры", "tomorrow": "«Что ждёт меня завтра» на сутки", "compat": "разбор совместимости", "numerology": "число жизненного пути", "money_ritual": "денежный ритуал по карте", "extended_natal": "расширенный разбор натальной карты", "compat_numerology": "числовая формула пары", "compat_month": "прогноз на месяц для пары"}
+FEATURE_PRICE = {"venus_retro": 249, "tomorrow": 100, "compat": 199, "numerology": 99, "money_ritual": 99, "extended_natal": 249, "compat_numerology": 129, "compat_month": 149, "matrix": 149}
+FEATURE_LABEL = {"venus_retro": "персональный разбор ретроградной Венеры", "tomorrow": "«Что ждёт меня завтра» на сутки", "compat": "разбор совместимости", "numerology": "число жизненного пути", "money_ritual": "денежный ритуал по карте", "extended_natal": "расширенный разбор натальной карты", "compat_numerology": "числовая формула пары", "compat_month": "прогноз на месяц для пары", "matrix": "матрица судьбы"}
 
 
 ct.FEATURE_PITCH["venus_retro"] = (
@@ -62,6 +64,9 @@ ct.FEATURE_PITCH["venus_retro"] = (
     "• личную карточку с петлёй Венеры по вашим домам;\n"
     "• медитацию «Возвращение к себе» на 10 минут: тёплый фон в фа мажоре, музыка, которая «дышит» в ритме спокойного дыхания, и колокольчики, по которым идёт практика."
 )
+
+
+ct.FEATURE_PITCH["matrix"] = matrix.PITCH
 
 
 def db_connect():
@@ -99,6 +104,7 @@ def db_init():
             )
         """)
         cur.execute("CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT)")
+        cur.execute("CREATE TABLE IF NOT EXISTS oracle_events (id SERIAL PRIMARY KEY, chat_id BIGINT, kind TEXT, created TIMESTAMPTZ DEFAULT now())")
         conn.commit()
 
 
@@ -464,6 +470,8 @@ async def text_intercept(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await _start_compat_core(chat_id, context)
         elif feature == "numerology":
             await _numerology_core(chat_id, context)
+        elif feature == "matrix":
+            await _matrix_core(chat_id, context)
         elif feature == "tomorrow":
             await _tomorrow_menu_core(chat_id, context)
         elif feature == "money_ritual":
@@ -587,6 +595,9 @@ CATEGORY_LOVE_CB = "cat_love"
 BACK_TO_MENU_CB = "back_menu"
 VENUS_RETRO_CB = "venus_retro"
 INVITE_CB = "invite"
+ORACLE_CB = "oracle"
+MATRIX_CB = "matrix"
+ORACLE_GET_CB = "oracle_get"
 
 
 def fmt_date(d: date) -> str:
@@ -1490,7 +1501,8 @@ def main_menu_keyboard():
         [InlineKeyboardButton(f"{SPHERE_EMOJI['health']} {ct.SPHERES['health']['title']}", callback_data=f"{SPHERE_CB_PREFIX}health")],
         [InlineKeyboardButton("🔭 Узнать важные даты", callback_data=FORECAST_CB)],
         [InlineKeyboardButton("✨ Жизнь, которую вы не прожили", callback_data=UNLIVED_CB)],
-        [InlineKeyboardButton("🔢 Число жизненного пути, 99 ₽", callback_data=NUMEROLOGY_CB)],
+        [InlineKeyboardButton("🔮 Получить ответ на вопрос — бесплатно", callback_data=ORACLE_CB)],
+        [InlineKeyboardButton(f"🌀 Матрица судьбы, {FEATURE_PRICE['matrix']} ₽", callback_data=MATRIX_CB)],
         [InlineKeyboardButton("🌅 Что ждёт меня завтра, 100 ₽/сутки", callback_data=TOMORROW_CB)],
         [InlineKeyboardButton("💌 Поделиться с близким", callback_data=INVITE_CB)],
         [InlineKeyboardButton("🔄 Начать заново", callback_data=RESTART_CB)],
@@ -1551,6 +1563,78 @@ async def back_to_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     await send_full_menu(update, context)
+
+
+def db_log_oracle(chat_id: int, kind: str):
+    if not DATABASE_URL:
+        return
+    try:
+        with db_connect() as conn, conn.cursor() as cur:
+            cur.execute("INSERT INTO oracle_events (chat_id, kind) VALUES (%s, %s)", (chat_id, kind))
+            conn.commit()
+    except Exception:
+        logging.exception("oracle: не удалось записать событие")
+
+
+async def matrix_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    chat_id = query.message.chat_id
+    date_str = context.user_data.get("date_str")
+    if not date_str:
+        await context.bot.send_message(chat_id=chat_id, text="Сначала пройдите разбор заново: /start")
+        return
+    year, month, day = (int(x) for x in date_str.split("-"))
+    points = matrix.compute(day, month, year)
+    await send_bot(context, chat_id, "Считаю вашу матрицу по дате рождения…", 0.9)
+    await send_bot(context, chat_id, matrix.teaser_text(points), 1.6)
+    if not await payment_gate(chat_id, context, "matrix"):
+        return
+    await _matrix_full(chat_id, context, points)
+
+
+async def _matrix_core(chat_id: int, context: ContextTypes.DEFAULT_TYPE):
+    date_str = context.user_data.get("date_str")
+    if not date_str:
+        await context.bot.send_message(chat_id=chat_id, text="Сначала пройдите разбор заново: /start")
+        return
+    year, month, day = (int(x) for x in date_str.split("-"))
+    await _matrix_full(chat_id, context, matrix.compute(day, month, year))
+
+
+async def _matrix_full(chat_id: int, context: ContextTypes.DEFAULT_TYPE, points: dict):
+    parts = matrix.full_parts(points)
+    for i, text in enumerate(parts):
+        await send_bot(context, chat_id, text, 1.4 if i else 1.0)
+    kb = InlineKeyboardMarkup([[InlineKeyboardButton("« Назад в меню", callback_data=BACK_TO_MENU_CB)]])
+    await context.bot.send_message(chat_id=chat_id, text="Что посмотрим дальше?", reply_markup=kb)
+
+
+async def oracle_intro(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton(oracle.GET_BUTTON, callback_data=ORACLE_GET_CB)],
+        [InlineKeyboardButton("« Назад в меню", callback_data=BACK_TO_MENU_CB)],
+    ])
+    db_log_oracle(query.message.chat_id, "open")
+    await context.bot.send_message(chat_id=query.message.chat_id, text=oracle.INTRO_TEXT, reply_markup=kb)
+
+
+async def oracle_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    chat_id = query.message.chat_id
+    await send_bot(context, chat_id, oracle.LISTENING_TEXT, 1.2)
+    await asyncio.sleep(1.0)
+    text, seen = oracle.pick_answer(context.user_data.get("oracle_seen", []))
+    context.user_data["oracle_seen"] = seen
+    db_log_oracle(chat_id, "answer")
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton(oracle.AGAIN_BUTTON, callback_data=ORACLE_GET_CB)],
+        [InlineKeyboardButton("« Назад в меню", callback_data=BACK_TO_MENU_CB)],
+    ])
+    await context.bot.send_message(chat_id=chat_id, text=f"{text}\n\n{oracle.FOOTER}", reply_markup=kb)
 
 
 PERSISTENT_KEYBOARD = ReplyKeyboardMarkup([["📋 Меню", "🆘 Поддержка"]], resize_keyboard=True)
@@ -2350,6 +2434,17 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
             paid_count, paid_sum = cur.fetchone()
             cur.execute("SELECT COUNT(*), COUNT(*) FILTER (WHERE rewarded) FROM referrals")
             ref_total, ref_done = cur.fetchone()
+            cur.execute(
+                "SELECT COUNT(DISTINCT chat_id) FILTER (WHERE kind='open'), "
+                "COUNT(DISTINCT chat_id) FILTER (WHERE kind='answer'), "
+                "COUNT(*) FILTER (WHERE kind='answer'), "
+                "COUNT(DISTINCT chat_id) FILTER (WHERE kind='open' AND created > now() - interval '7 days'), "
+                "COUNT(*) FILTER (WHERE kind='answer' AND created > now() - interval '7 days'), "
+                "COUNT(DISTINCT chat_id) FILTER (WHERE kind='open' AND created > now() - interval '1 day'), "
+                "COUNT(*) FILTER (WHERE kind='answer' AND created > now() - interval '1 day') "
+                "FROM oracle_events"
+            )
+            o_open, o_users, o_answers, o_open7, o_ans7, o_open1, o_ans1 = cur.fetchone()
     except Exception as e:
         await update.message.reply_text(f"Не удалось посчитать: {e}")
         return
@@ -2362,7 +2457,11 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Дошли до бесплатного разбора: {finished}.\n\n"
         f"По источникам за 14 дней:\n{source_lines}\n\n"
         f"Оплаты всего: {paid_count} шт. на {paid_sum:.0f}₽\n{feature_lines}\n\n"
-        f"Приглашения друзей: пришли по ссылкам {ref_total}, прошли разбор и принесли подарок {ref_done}."
+        f"Приглашения друзей: пришли по ссылкам {ref_total}, прошли разбор и принесли подарок {ref_done}.\n\n"
+        f"Квантовый оракул (с момента запуска):\n"
+        f"  открыли раздел: {o_open} чел. (за 7 дней {o_open7}, за сутки {o_open1})\n"
+        f"  получили ответ: {o_users} чел., всего ответов {o_answers} (за 7 дней {o_ans7}, за сутки {o_ans1})\n"
+        f"  ответов на человека: {(o_answers / o_users) if o_users else 0:.1f}"
     )
 
 
@@ -2541,7 +2640,7 @@ def main():
     application.add_handler(CallbackQueryHandler(money_ritual, pattern=f"^{MONEY_RITUAL_CB}$"))
     application.add_handler(CallbackQueryHandler(tomorrow_western, pattern=f"^{TOMORROW_WESTERN_CB}$"))
     application.add_handler(CallbackQueryHandler(tomorrow_choghadiya, pattern=f"^{TOMORROW_CHOGHADIYA_CB}$"))
-    application.add_handler(CallbackQueryHandler(payment_confirm, pattern="^paycheck:(numerology|tomorrow|money_ritual|extended_natal|compat_numerology|compat_month|venus_retro)$"))
+    application.add_handler(CallbackQueryHandler(payment_confirm, pattern="^paycheck:(numerology|matrix|tomorrow|money_ritual|extended_natal|compat_numerology|compat_month|venus_retro)$"))
     application.add_handler(CallbackQueryHandler(compat_numerology, pattern=f"^{COMPAT_NUMEROLOGY_CB}$"))
     application.add_handler(CallbackQueryHandler(compat_month, pattern=f"^{COMPAT_MONTH_CB}$"))
     application.add_handler(CallbackQueryHandler(share_story, pattern=f"^{SHARE_STORY_CB}$"))
@@ -2549,6 +2648,9 @@ def main():
     application.add_handler(CallbackQueryHandler(sign_check_a, pattern="^sc_a:"))
     application.add_handler(CallbackQueryHandler(sign_check_b, pattern="^sc_b:"))
     application.add_handler(CallbackQueryHandler(invite_friend, pattern=f"^{INVITE_CB}$"))
+    application.add_handler(CallbackQueryHandler(matrix_start, pattern=f"^{MATRIX_CB}$"))
+    application.add_handler(CallbackQueryHandler(oracle_intro, pattern=f"^{ORACLE_CB}$"))
+    application.add_handler(CallbackQueryHandler(oracle_answer, pattern=f"^{ORACLE_GET_CB}$"))
     application.add_handler(CallbackQueryHandler(venus_retro_handler, pattern=f"^{VENUS_RETRO_CB}$"))
     application.add_handler(CommandHandler("invite", invite_friend))
     application.add_handler(CommandHandler("broadcast", broadcast))
