@@ -252,9 +252,9 @@ async def yookassa_check_payment(payment_id):
     return result.get("status") if result else None
 
 
-# ВРЕМЕННО: все платные функции открыты бесплатно для тестирования.
+# Все платные функции снова платные. Для теста без оплаты — FREE_MODE = True.
 # Чтобы вернуть оплату — поставь FREE_MODE = False.
-FREE_MODE = True
+FREE_MODE = False
 
 
 async def payment_gate(chat_id: int, context: ContextTypes.DEFAULT_TYPE, feature: str) -> bool:
