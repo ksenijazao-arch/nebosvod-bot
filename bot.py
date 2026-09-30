@@ -40,6 +40,7 @@ import content_extended as ct2
 import gauge
 import wheel
 import cards
+import daily
 
 DATABASE_URL = os.environ.get("DATABASE_URL")
 BROADCAST_PASSWORD = os.environ.get("BROADCAST_PASSWORD", "")
@@ -84,6 +85,7 @@ def db_init():
                 rewarded BOOLEAN NOT NULL DEFAULT FALSE
             )
         """)
+        cur.execute("CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT)")
         conn.commit()
 
 
@@ -2281,6 +2283,96 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+# ---------- Ежедневный пост в канал ----------
+CHANNEL_ID = os.environ.get("CHANNEL_ID", "@nebosvod_astro")
+CHANNEL_POST_UTC_HOUR = 5  # 08:00 по Москве
+CHANNEL_BOT_LINK = "https://t.me/nebosvod_astro_bot?start=channel"
+
+
+def db_kv_get(key):
+    if not DATABASE_URL:
+        return None
+    try:
+        with db_connect() as conn, conn.cursor() as cur:
+            cur.execute("SELECT value FROM kv WHERE key=%s", (key,))
+            row = cur.fetchone()
+            return row[0] if row else None
+    except Exception:
+        logging.exception("kv: не удалось прочитать")
+        return None
+
+
+def db_kv_set(key, value):
+    if not DATABASE_URL:
+        return
+    try:
+        with db_connect() as conn, conn.cursor() as cur:
+            cur.execute("INSERT INTO kv (key, value) VALUES (%s, %s) ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value", (key, value))
+            conn.commit()
+    except Exception:
+        logging.exception("kv: не удалось записать")
+
+
+def _msk_today():
+    from datetime import datetime as _dt, timezone as _tz
+    return (_dt.now(_tz.utc) + timedelta(hours=3)).date()
+
+
+async def post_daily_to_channel(bot, force=False):
+    """Публикует пост «Небо на сегодня» в канал. Не повторяет пост, если
+    сегодня он уже вышел (дата хранится в базе, переживает перезапуски)."""
+    today = _msk_today()
+    if not force and db_kv_get("channel_last_post") == today.isoformat():
+        return False
+    text = daily.build_daily_post(today, CHANNEL_BOT_LINK)
+    await bot.send_message(chat_id=CHANNEL_ID, text=text, parse_mode="HTML", disable_web_page_preview=True)
+    db_kv_set("channel_last_post", today.isoformat())
+    log.info("Пост дня опубликован в %s", CHANNEL_ID)
+    return True
+
+
+async def channel_scheduler(application):
+    """Раз в 5 минут проверяет, не пора ли публиковать. Окно публикации —
+    с 08:00 до 13:00 по Москве, чтобы после перезапуска сервера утренний
+    пост всё равно вышел, но не посреди ночи."""
+    from datetime import datetime as _dt, timezone as _tz
+    while True:
+        try:
+            now = _dt.now(_tz.utc)
+            if CHANNEL_POST_UTC_HOUR <= now.hour < CHANNEL_POST_UTC_HOUR + 5:
+                await post_daily_to_channel(application.bot)
+        except Exception:
+            logging.exception("не удалось опубликовать пост дня")
+        await asyncio.sleep(300)
+
+
+async def _post_init(application):
+    application.create_task(channel_scheduler(application))
+
+
+async def channel_preview(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/channel_preview пароль — присылает сегодняшний пост вам в личку, в канал не публикует."""
+    parts = (update.message.text or "").split(maxsplit=1)
+    if len(parts) < 2 or parts[1] != BROADCAST_PASSWORD or not BROADCAST_PASSWORD:
+        await update.message.reply_text("Формат: /channel_preview пароль")
+        return
+    text = daily.build_daily_post(_msk_today(), CHANNEL_BOT_LINK)
+    await update.message.reply_text(text, parse_mode="HTML", disable_web_page_preview=True)
+
+
+async def channel_post_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/channel_post пароль — публикует сегодняшний пост в канал прямо сейчас."""
+    parts = (update.message.text or "").split(maxsplit=1)
+    if len(parts) < 2 or parts[1] != BROADCAST_PASSWORD or not BROADCAST_PASSWORD:
+        await update.message.reply_text("Формат: /channel_post пароль")
+        return
+    try:
+        await post_daily_to_channel(context.bot, force=True)
+        await update.message.reply_text(f"Опубликовано в {CHANNEL_ID}.")
+    except Exception as e:
+        await update.message.reply_text(f"Не получилось опубликовать: {e}. Проверьте, что бот — администратор канала с правом публикации.")
+
+
 async def reply_to_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """/reply chat_id текст, только для администратора (ADMIN_CHAT_ID),
     отправляет указанному пользователю сообщение от имени бота. Так можно
@@ -2309,7 +2401,7 @@ def main():
     start_health_server()
     db_init()
 
-    application = Application.builder().token(token).build()
+    application = Application.builder().token(token).post_init(_post_init).build()
 
     conv = ConversationHandler(
         entry_points=[CommandHandler("start", start), CallbackQueryHandler(restart_button, pattern=f"^{RESTART_CB}$")],
@@ -2378,6 +2470,8 @@ def main():
     application.add_handler(CommandHandler("broadcast", broadcast))
     application.add_handler(CommandHandler("stats", stats))
     application.add_handler(CommandHandler("reply", reply_to_user))
+    application.add_handler(CommandHandler("channel_preview", channel_preview))
+    application.add_handler(CommandHandler("channel_post", channel_post_now))
 
     log.info("Небосвод запущен, жду сообщений…")
     application.run_polling(allowed_updates=Update.ALL_TYPES)
