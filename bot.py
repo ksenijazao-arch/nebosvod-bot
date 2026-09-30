@@ -41,14 +41,27 @@ import gauge
 import wheel
 import cards
 import daily
+import venus_retro
 
 DATABASE_URL = os.environ.get("DATABASE_URL")
 BROADCAST_PASSWORD = os.environ.get("BROADCAST_PASSWORD", "")
 YOOKASSA_SHOP_ID = os.environ.get("YOOKASSA_SHOP_ID", "")
 YOOKASSA_SECRET_KEY = os.environ.get("YOOKASSA_SECRET_KEY", "")
 
-FEATURE_PRICE = {"tomorrow": 100, "compat": 199, "numerology": 99, "money_ritual": 99, "extended_natal": 249, "compat_numerology": 129, "compat_month": 149}
-FEATURE_LABEL = {"tomorrow": "«Что ждёт меня завтра» на сутки", "compat": "разбор совместимости", "numerology": "число жизненного пути", "money_ritual": "денежный ритуал по карте", "extended_natal": "расширенный разбор натальной карты", "compat_numerology": "числовая формула пары", "compat_month": "прогноз на месяц для пары"}
+FEATURE_PRICE = {"venus_retro": 249, "tomorrow": 100, "compat": 199, "numerology": 99, "money_ritual": 99, "extended_natal": 249, "compat_numerology": 129, "compat_month": 149}
+FEATURE_LABEL = {"venus_retro": "персональный разбор ретроградной Венеры", "tomorrow": "«Что ждёт меня завтра» на сутки", "compat": "разбор совместимости", "numerology": "число жизненного пути", "money_ritual": "денежный ритуал по карте", "extended_natal": "расширенный разбор натальной карты", "compat_numerology": "числовая формула пары", "compat_month": "прогноз на месяц для пары"}
+
+
+ct.FEATURE_PITCH["venus_retro"] = (
+    "💗 Ваша ретроградная Венера — разбор именно по вашей карте, а не по знаку.\n\n"
+    "Что вы получите:\n"
+    "• в какой сфере вашей жизни пройдёт пересмотр любви и денег и что именно может вернуться;\n"
+    "• какие ваши личные планеты заденет Венера — с точными датами ваших острых дней;\n"
+    "• взгляд джйотиш: что сдвинется в ноябре, когда Венера уйдёт в знак падения, и как это связано с вашим большим периодом жизни;\n"
+    "• план по фазам: что делать на каждом этапе до 16 декабря и чего не делать;\n"
+    "• личную карточку с петлёй Венеры по вашим домам;\n"
+    "• медитацию «Возвращение к себе» на 10 минут: тёплый фон в фа мажоре, музыка, которая «дышит» в ритме спокойного дыхания, и колокольчики, по которым идёт практика."
+)
 
 
 def db_connect():
@@ -455,6 +468,14 @@ async def text_intercept(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await _tomorrow_menu_core(chat_id, context)
         elif feature == "money_ritual":
             await _money_ritual_core(chat_id, context)
+        elif feature == "extended_natal":
+            await _extended_natal_core(chat_id, context)
+        elif feature == "compat_numerology":
+            await _compat_numerology_core(chat_id, context)
+        elif feature == "compat_month":
+            await _compat_month_core(chat_id, context)
+        elif feature == "venus_retro":
+            await _venus_retro_core(chat_id, context)
         raise ApplicationHandlerStop
 
 
@@ -518,6 +539,8 @@ async def payment_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await _compat_numerology_core(chat_id, context)
         elif feature == "compat_month":
             await _compat_month_core(chat_id, context)
+        elif feature == "venus_retro":
+            await _venus_retro_core(chat_id, context)
     elif status in ("pending", "waiting_for_capture"):
         await context.bot.send_message(
             chat_id=chat_id,
@@ -562,6 +585,7 @@ CATEGORY_CHART_CB = "cat_chart"
 CATEGORY_MONEY_CB = "cat_money"
 CATEGORY_LOVE_CB = "cat_love"
 BACK_TO_MENU_CB = "back_menu"
+VENUS_RETRO_CB = "venus_retro"
 INVITE_CB = "invite"
 
 
@@ -1458,6 +1482,7 @@ SPHERE_EMOJI = {"money": "💰", "love": "❤️", "career": "💼", "health": "
 
 def main_menu_keyboard():
     return InlineKeyboardMarkup([
+        [InlineKeyboardButton(f"💗 Ваша ретроградная Венера, {FEATURE_PRICE['venus_retro']} ₽", callback_data=VENUS_RETRO_CB)],
         [InlineKeyboardButton("🔮 Гармония и разбор карты  ›", callback_data=CATEGORY_CHART_CB)],
         [InlineKeyboardButton("💰 Деньги  ›", callback_data=CATEGORY_MONEY_CB)],
         [InlineKeyboardButton("❤️ Отношения  ›", callback_data=CATEGORY_LOVE_CB)],
@@ -1513,6 +1538,7 @@ async def category_love(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ("❤️ Разбор сферы отношений — бесплатно", f"{SPHERE_CB_PREFIX}love"),
         ("💫 Быстрая проверка по знаку — бесплатно", SIGN_CHECK_CB),
         ("💞 Совместимость с партнёром, 199 ₽", COMPAT_CB),
+        (f"💗 Ваша ретроградная Венера, {FEATURE_PRICE['venus_retro']} ₽", VENUS_RETRO_CB),
     ])
     await context.bot.send_message(
         chat_id=query.message.chat_id,
@@ -1959,6 +1985,63 @@ async def harmony(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=keyboard,
     )
     await send_menu(context, chat_id)
+
+
+async def venus_retro_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    await _venus_retro_core(query.message.chat_id, context)
+
+
+async def _venus_retro_core(chat_id: int, context: ContextTypes.DEFAULT_TYPE):
+    chart = context.user_data.get("chart")
+    if not chart:
+        await context.bot.send_message(chat_id=chat_id, text="Сначала пройдите бесплатный разбор: /start")
+        return
+    if not await payment_gate(chat_id, context, "venus_retro"):
+        return
+    await send_bot(context, chat_id, "Считаю, как ретроградная Венера проходит по вашей карте…", 1.0)
+    from datetime import datetime as _dt, timezone as _tz
+    now = _dt.now(_tz.utc)
+    today_jd = ac.to_jd(now.year, now.month, now.day, 0, 0)
+    data = venus_retro.compute(chart)
+    dasha_label = ct.DASHA_LABEL.get(data["dasha"]) if data["dasha"] else None
+    card_path = os.path.join("/tmp", f"venus_card_{chat_id}.png")
+    try:
+        venus_retro.render_card(chart, data, card_path, gauge.SIGN_GLYPH, today_jd=today_jd)
+        with open(card_path, "rb") as f:
+            await context.bot.send_photo(chat_id=chat_id, photo=f, caption="Ваша карта ретроградной Венеры. Сохраните: к ней удобно возвращаться до 16 декабря.")
+    except Exception:
+        logging.exception("не удалось нарисовать карточку Венеры")
+    finally:
+        try:
+            os.remove(card_path)
+        except OSError:
+            pass
+    for msg in venus_retro.build_messages(chart, data, dasha_label, today_jd=today_jd):
+        await send_bot(context, chat_id, msg, 1.6)
+    await send_venus_meditation(context, chat_id)
+    await send_menu(context, chat_id)
+
+
+async def send_venus_meditation(context, chat_id):
+    """Медитация отправляется один раз файлом, дальше по сохранённому file_id."""
+    file_id = db_kv_get("venus_meditation_file_id")
+    caption = "🔔 Медитация «Возвращение к себе», 10 минут. Лучше в наушниках на тихой громкости. Включите, закройте глаза, позвольте дыханию подстроиться под музыку и следуйте за колокольчиками."
+    try:
+        if file_id:
+            await context.bot.send_audio(chat_id=chat_id, audio=file_id, caption=caption)
+            return
+    except Exception:
+        logging.exception("file_id медитации не сработал, отправляю файлом")
+    path = os.path.join(os.path.dirname(__file__), "venus_meditation.mp3")
+    with open(path, "rb") as f:
+        msg = await context.bot.send_audio(
+            chat_id=chat_id, audio=f, caption=caption,
+            title="Возвращение к себе", performer="Небосвод", read_timeout=120, write_timeout=120,
+        )
+    if msg and msg.audio:
+        db_kv_set("venus_meditation_file_id", msg.audio.file_id)
 
 
 async def extended_natal(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2458,7 +2541,7 @@ def main():
     application.add_handler(CallbackQueryHandler(money_ritual, pattern=f"^{MONEY_RITUAL_CB}$"))
     application.add_handler(CallbackQueryHandler(tomorrow_western, pattern=f"^{TOMORROW_WESTERN_CB}$"))
     application.add_handler(CallbackQueryHandler(tomorrow_choghadiya, pattern=f"^{TOMORROW_CHOGHADIYA_CB}$"))
-    application.add_handler(CallbackQueryHandler(payment_confirm, pattern="^paycheck:(numerology|tomorrow|money_ritual|extended_natal|compat_numerology|compat_month)$"))
+    application.add_handler(CallbackQueryHandler(payment_confirm, pattern="^paycheck:(numerology|tomorrow|money_ritual|extended_natal|compat_numerology|compat_month|venus_retro)$"))
     application.add_handler(CallbackQueryHandler(compat_numerology, pattern=f"^{COMPAT_NUMEROLOGY_CB}$"))
     application.add_handler(CallbackQueryHandler(compat_month, pattern=f"^{COMPAT_MONTH_CB}$"))
     application.add_handler(CallbackQueryHandler(share_story, pattern=f"^{SHARE_STORY_CB}$"))
@@ -2466,6 +2549,7 @@ def main():
     application.add_handler(CallbackQueryHandler(sign_check_a, pattern="^sc_a:"))
     application.add_handler(CallbackQueryHandler(sign_check_b, pattern="^sc_b:"))
     application.add_handler(CallbackQueryHandler(invite_friend, pattern=f"^{INVITE_CB}$"))
+    application.add_handler(CallbackQueryHandler(venus_retro_handler, pattern=f"^{VENUS_RETRO_CB}$"))
     application.add_handler(CommandHandler("invite", invite_friend))
     application.add_handler(CommandHandler("broadcast", broadcast))
     application.add_handler(CommandHandler("stats", stats))
