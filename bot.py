@@ -1009,9 +1009,9 @@ def invite_keyboard(chat_id):
     link = referral_link(chat_id)
     share_url = "https://t.me/share/url?" + urllib.parse.urlencode({
         "url": link,
-        "text": "Узнай свою накшатру и ведическую Луну в Небосводе, первый разбор бесплатный 🌙",
+        "text": "В индийской астрологии у каждого есть накшатра — лунная стоянка, которая говорит о человеке точнее знака зодиака. Узнай свою: первый разбор в Небосводе бесплатный 🌙",
     })
-    return InlineKeyboardMarkup([[InlineKeyboardButton("💌 Поделиться Небосводом", url=share_url)]])
+    return InlineKeyboardMarkup([[InlineKeyboardButton("💌 Поделиться с близким", url=share_url)]])
 
 
 async def send_vedic_story(context, chat_id, sun_west, sun_vedic, moon_vedic, nakshatra):
@@ -1022,7 +1022,15 @@ async def send_vedic_story(context, chat_id, sun_west, sun_vedic, moon_vedic, na
         with open(story_path, "rb") as f:
             await context.bot.send_photo(
                 chat_id=chat_id, photo=f,
-                caption="Ваша карточка. Сохраните и выложите в сторис: пусть и другие узнают свою накшатру 🌙",
+                caption=(
+                    f"🌙 Ваша накшатра — {nakshatra['name']}. В джйотиш это главный ключ к человеку: "
+                    "по ней считают большие периоды жизни, совместимость пары и даже первый слог имени.\n\n"
+                    "На карточке собрано самое важное о вас сразу по двум системам: накшатра, ведические Солнце и Луна "
+                    "и ваш привычный западный знак. Возвращайтесь к ней, когда нужно опереться на свою природу: "
+                    "принять решение, понять, почему вас тянет к одним людям и отталкивает от других, "
+                    "или выбрать время для важного шага.\n\n"
+                    "Сохраните её, чтобы ваше небо всегда было под рукой."
+                ),
             )
     except Exception:
         logging.exception("не удалось отправить карточку для сторис")
@@ -1033,8 +1041,8 @@ async def send_vedic_story(context, chat_id, sun_west, sun_vedic, moon_vedic, na
             pass
     await send_bot(
         context, chat_id,
-        "🎁 И маленький подарок. Поделитесь своей личной ссылкой на Небосвод с тем, кому это тоже будет интересно. "
-        "Когда человек пройдёт бесплатный разбор, я открою вам «Что ждёт меня завтра» на сутки, бесплатно.",
+        "Если захочется поделиться этим знанием с близким человеком, вот ваша личная ссылка. "
+        "Когда он пройдёт бесплатный разбор, я подарю вам «Что ждёт меня завтра» на сутки 🎁",
         1.0, reply_markup=invite_keyboard(chat_id),
     )
 
@@ -1063,8 +1071,9 @@ async def invite_friend(update: Update, context: ContextTypes.DEFAULT_TYPE):
     extra = f"\n\nПо вашим ссылкам уже прошли разбор: {count}." if count else ""
     await context.bot.send_message(
         chat_id=chat_id,
-        text="🎁 Поделитесь Небосводом с близкими. Когда приглашённый вами человек пройдёт бесплатный разбор, я открою вам "
-             "«Что ждёт меня завтра» на сутки, бесплатно. За каждого нового человека — новые сутки.\n\n"
+        text="Если хочется поделиться Небосводом с близким человеком, отправьте ему свою личную ссылку. "
+             "Когда он пройдёт бесплатный разбор, я подарю вам «Что ждёт меня завтра» на сутки 🎁 "
+             "За каждого нового человека — новые сутки.\n\n"
              f"Ваша личная ссылка:\n{referral_link(chat_id)}{extra}",
         reply_markup=invite_keyboard(chat_id),
         disable_web_page_preview=True,
@@ -1456,7 +1465,7 @@ def main_menu_keyboard():
         [InlineKeyboardButton("✨ Жизнь, которую вы не прожили", callback_data=UNLIVED_CB)],
         [InlineKeyboardButton("🔢 Число жизненного пути, 99 ₽", callback_data=NUMEROLOGY_CB)],
         [InlineKeyboardButton("🌅 Что ждёт меня завтра, 100 ₽/сутки", callback_data=TOMORROW_CB)],
-        [InlineKeyboardButton("🎁 Поделиться и получить подарок", callback_data=INVITE_CB)],
+        [InlineKeyboardButton("💌 Поделиться с близким", callback_data=INVITE_CB)],
         [InlineKeyboardButton("🔄 Начать заново", callback_data=RESTART_CB)],
     ])
 
