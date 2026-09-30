@@ -66,3 +66,59 @@ def render_point_card(glyph, name, sign_glyph, sign_name, house_num, harmony_wei
 
     img.save(out_path)
     return out_path
+
+
+def _fit_font(draw, text, max_w, start, bold=True, min_size=60):
+    size = start
+    while size > min_size:
+        f = _font(size, bold)
+        b = draw.textbbox((0, 0), text, font=f)
+        if b[2] - b[0] <= max_w:
+            return f
+        size -= 4
+    return _font(min_size, bold)
+
+
+def render_vedic_story(sun_west, sun_vedic, moon_vedic, nak_name, pada, out_path, glyphs=None):
+    """Вертикальная карточка 1080x1920 для сторис после бесплатного разбора:
+    накшатра Луны, ведические Солнце и Луна, западное Солнце и адрес бота.
+    Человек сохраняет её и выкладывает, подруги видят бота."""
+    import random
+    W, H = 1080, 1920
+    img = Image.new("RGB", (W, H), BG)
+    draw = ImageDraw.Draw(img)
+    rnd = random.Random(hash(nak_name) & 0xFFFF)
+    for _ in range(170):
+        x, y, r = rnd.randint(0, W), rnd.randint(0, H), rnd.choice([1, 1, 1, 2, 2, 3])
+        col = GOLD if rnd.random() < 0.18 else (200, 204, 220)
+        draw.ellipse([x - r, y - r, x + r, y + r], fill=col)
+    draw.rounded_rectangle([44, 44, W - 44, H - 44], radius=36, outline=GOLD, width=3)
+
+    cx = W // 2
+    g = glyphs or {}
+    _centered(draw, cx, 150, "Н Е Б О С В О Д", _font(34, True), GOLD)
+
+    # полумесяц
+    mx, my, R = cx, 420, 120
+    draw.ellipse([mx - R, my - R, mx + R, my + R], fill=GOLD)
+    draw.ellipse([mx - R + 58, my - R - 18, mx + R + 58, my + R - 18], fill=BG)
+
+    _centered(draw, cx, 640, "МОЯ НАКШАТРА", _font(40, True), GREY)
+    nf = _fit_font(draw, nak_name, W - 180, 128)
+    _centered(draw, cx, 720, nak_name, nf, GOLD)
+    _centered(draw, cx, 900, f"{pada}-я пада · лунная стоянка", _font(40), WHITE)
+
+    draw.line([cx - 150, 1010, cx + 150, 1010], fill=GOLD, width=3)
+
+    rows = [("Солнце в джйотиш", sun_vedic), ("Луна в джйотиш", moon_vedic), ("Солнце на Западе", sun_west)]
+    y = 1080
+    lab_f, val_f = _font(38), _font(50, True)
+    for label, sign in rows:
+        _centered(draw, cx, y, label, lab_f, GREY)
+        _centered(draw, cx, y + 58, f"{g.get(sign, '')} {sign}".strip(), val_f, WHITE)
+        y += 170
+
+    _centered(draw, cx, 1640, "А какая накшатра у тебя?", _font(44, True), GOLD)
+    _centered(draw, cx, 1720, "@nebosvod_astro_bot", _font(40), WHITE)
+    img.save(out_path)
+    return out_path

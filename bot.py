@@ -76,22 +76,99 @@ def db_init():
                 valid_until TIMESTAMPTZ
             )
         """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS referrals (
+                referred BIGINT PRIMARY KEY,
+                referrer BIGINT NOT NULL,
+                created_at TIMESTAMPTZ DEFAULT now(),
+                rewarded BOOLEAN NOT NULL DEFAULT FALSE
+            )
+        """)
         conn.commit()
 
 
 def db_remember_user(chat_id, source=None):
+    """Запоминает пользователя. Возвращает True, если он пришёл впервые
+    (строки в базе не было), иначе False."""
     if not DATABASE_URL:
-        return
+        return False
     try:
         with db_connect() as conn, conn.cursor() as cur:
             cur.execute(
                 "INSERT INTO users (chat_id, source) VALUES (%s, %s) "
-                "ON CONFLICT (chat_id) DO UPDATE SET source = COALESCE(users.source, EXCLUDED.source)",
+                "ON CONFLICT (chat_id) DO UPDATE SET source = COALESCE(users.source, EXCLUDED.source) "
+                "RETURNING (xmax = 0)",
                 (chat_id, source),
+            )
+            row = cur.fetchone()
+            conn.commit()
+            return bool(row and row[0])
+    except Exception:
+        logging.exception("не удалось сохранить пользователя")
+        return False
+
+
+# ---------- Приглашения друзей ----------
+REFERRAL_PREFIX = "ref_"
+REFERRAL_GIFT_FEATURE = "tomorrow"
+
+
+def referral_link(chat_id):
+    return f"https://t.me/nebosvod_astro_bot?start={REFERRAL_PREFIX}{chat_id}"
+
+
+def db_add_referral(referred, referrer):
+    if not DATABASE_URL or referred == referrer:
+        return
+    try:
+        with db_connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO referrals (referred, referrer) VALUES (%s, %s) ON CONFLICT (referred) DO NOTHING",
+                (referred, referrer),
             )
             conn.commit()
     except Exception:
-        logging.exception("не удалось сохранить пользователя")
+        logging.exception("не удалось сохранить приглашение")
+
+
+def db_claim_referral_reward(referred):
+    """Если человек пришёл по приглашению и награда ещё не выдана, помечает
+    её выданной, дарит пригласившему «Что ждёт меня завтра» на сутки и
+    возвращает chat_id пригласившего. Иначе None."""
+    if not DATABASE_URL:
+        return None
+    try:
+        with db_connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                "UPDATE referrals SET rewarded=TRUE WHERE referred=%s AND rewarded=FALSE RETURNING referrer",
+                (referred,),
+            )
+            row = cur.fetchone()
+            if not row:
+                conn.commit()
+                return None
+            referrer = row[0]
+            cur.execute(
+                "INSERT INTO payments (chat_id, feature, yookassa_payment_id, status, amount, valid_until) "
+                "VALUES (%s, %s, 'referral_gift', 'succeeded', 0, now() + interval '24 hours')",
+                (referrer, REFERRAL_GIFT_FEATURE),
+            )
+            conn.commit()
+            return referrer
+    except Exception:
+        logging.exception("не удалось выдать подарок за приглашение")
+        return None
+
+
+def db_referral_count(referrer):
+    if not DATABASE_URL:
+        return 0
+    try:
+        with db_connect() as conn, conn.cursor() as cur:
+            cur.execute("SELECT COUNT(*) FROM referrals WHERE referrer=%s AND rewarded", (referrer,))
+            return cur.fetchone()[0]
+    except Exception:
+        return 0
 
 
 def db_all_users():
@@ -483,6 +560,7 @@ CATEGORY_CHART_CB = "cat_chart"
 CATEGORY_MONEY_CB = "cat_money"
 CATEGORY_LOVE_CB = "cat_love"
 BACK_TO_MENU_CB = "back_menu"
+INVITE_CB = "invite"
 
 
 def fmt_date(d: date) -> str:
@@ -511,7 +589,9 @@ def gender_keyboard():
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     chat_id = update.effective_chat.id
     source = context.args[0][:60] if context.args else None
-    db_remember_user(chat_id, source)
+    is_new = db_remember_user(chat_id, source)
+    if is_new and source and source.startswith(REFERRAL_PREFIX) and source[len(REFERRAL_PREFIX):].isdigit():
+        db_add_referral(chat_id, int(source[len(REFERRAL_PREFIX):]))
 
     if context.user_data.get("chart"):
         await send_bot(context, chat_id, "С возвращением! Ваш разбор уже готов, не нужно проходить его заново.", 0.5)
@@ -925,6 +1005,72 @@ async def _compat_month_core(chat_id: int, context: ContextTypes.DEFAULT_TYPE):
     await send_menu(context, chat_id)
 
 
+def invite_keyboard(chat_id):
+    link = referral_link(chat_id)
+    share_url = "https://t.me/share/url?" + urllib.parse.urlencode({
+        "url": link,
+        "text": "Узнала свою накшатру и ведическую Луну в Небосводе, первый разбор бесплатный. Посмотри свою 🌙",
+    })
+    return InlineKeyboardMarkup([[InlineKeyboardButton("💌 Отправить подруге", url=share_url)]])
+
+
+async def send_vedic_story(context, chat_id, sun_west, sun_vedic, moon_vedic, nakshatra):
+    """Карточка для сторис после бесплатного разбора и приглашение подруги."""
+    story_path = os.path.join("/tmp", f"vedic_story_{chat_id}.png")
+    try:
+        cards.render_vedic_story(sun_west, sun_vedic, moon_vedic, nakshatra["name"], nakshatra["pada"], story_path, gauge.SIGN_GLYPH)
+        with open(story_path, "rb") as f:
+            await context.bot.send_photo(
+                chat_id=chat_id, photo=f,
+                caption="Ваша карточка. Сохраните и выложите в сторис: пусть подруги тоже узнают свою накшатру 🌙",
+            )
+    except Exception:
+        logging.exception("не удалось отправить карточку для сторис")
+    finally:
+        try:
+            os.remove(story_path)
+        except OSError:
+            pass
+    await send_bot(
+        context, chat_id,
+        "🎁 И маленький подарок. Отправьте подруге свою личную ссылку на Небосвод. "
+        "Когда она пройдёт бесплатный разбор, я открою вам «Что ждёт меня завтра» на сутки, бесплатно.",
+        1.0, reply_markup=invite_keyboard(chat_id),
+    )
+
+
+async def reward_referrer_if_any(context, chat_id):
+    referrer = db_claim_referral_reward(chat_id)
+    if not referrer:
+        return
+    try:
+        await context.bot.send_message(
+            chat_id=referrer,
+            text="🎁 Человек, которого вы пригласили, только что прошёл разбор в Небосводе. Спасибо! "
+                 "Дарю вам «Что ждёт меня завтра» на сутки, бесплатно.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🌅 Открыть прогноз на завтра", callback_data=TOMORROW_CB)]]),
+        )
+    except Exception:
+        logging.exception("не удалось уведомить пригласившего")
+
+
+async def invite_friend(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Кнопка меню и команда /invite: личная ссылка для приглашения."""
+    chat_id = update.effective_chat.id
+    if update.callback_query:
+        await update.callback_query.answer()
+    count = db_referral_count(chat_id)
+    extra = f"\n\nПо вашим ссылкам уже прошли разбор: {count}." if count else ""
+    await context.bot.send_message(
+        chat_id=chat_id,
+        text="🎁 Пригласите подругу в Небосвод. Когда она пройдёт бесплатный разбор, я открою вам "
+             "«Что ждёт меня завтра» на сутки, бесплатно. За каждую подругу — новые сутки.\n\n"
+             f"Ваша личная ссылка:\n{referral_link(chat_id)}{extra}",
+        reply_markup=invite_keyboard(chat_id),
+        disable_web_page_preview=True,
+    )
+
+
 async def share_story(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -1310,6 +1456,7 @@ def main_menu_keyboard():
         [InlineKeyboardButton("✨ Жизнь, которую вы не прожили", callback_data=UNLIVED_CB)],
         [InlineKeyboardButton("🔢 Число жизненного пути, 99 ₽", callback_data=NUMEROLOGY_CB)],
         [InlineKeyboardButton("🌅 Что ждёт меня завтра, 100 ₽/сутки", callback_data=TOMORROW_CB)],
+        [InlineKeyboardButton("🎁 Пригласить подругу — подарок", callback_data=INVITE_CB)],
         [InlineKeyboardButton("🔄 Начать заново", callback_data=RESTART_CB)],
     ])
 
@@ -1510,6 +1657,9 @@ async def deliver_chart(update: Update, context: ContextTypes.DEFAULT_TYPE, chat
         f"Следующий период {ct.DASHA_LABEL[next_planet]} начнётся {ac.jd_to_date_label(next_start_jd)}.",
         2.2,
     )
+
+    await send_vedic_story(context, chat_id, chart["sun"]["sign"], sun_sid_sign["sign"], moon_sid_sign["sign"], nakshatra)
+    await reward_referrer_if_any(context, chat_id)
 
     await send_menu(context, chat_id)
     return ConversationHandler.END
@@ -2090,20 +2240,22 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
             cur.execute("SELECT COUNT(*) FROM users WHERE first_seen > now() - interval '1 day'")
             day = cur.fetchone()[0]
             cur.execute(
-                "SELECT COALESCE(source, 'без метки'), COUNT(*) FROM users "
+                "SELECT CASE WHEN source LIKE 'ref\\_%%' THEN 'приглашения друзей' ELSE COALESCE(source, 'без метки') END AS src, COUNT(*) FROM users "
                 "WHERE first_seen > now() - interval '14 days' "
-                "GROUP BY source ORDER BY COUNT(*) DESC LIMIT 15"
+                "GROUP BY src ORDER BY COUNT(*) DESC LIMIT 15"
             )
             by_source = cur.fetchall()
             cur.execute("SELECT COUNT(*) FROM users WHERE chart_json IS NOT NULL")
             finished = cur.fetchone()[0]
             cur.execute(
                 "SELECT feature, COUNT(*), COALESCE(SUM(amount),0) FROM payments "
-                "WHERE status='succeeded' GROUP BY feature ORDER BY COUNT(*) DESC"
+                "WHERE status='succeeded' AND amount > 0 GROUP BY feature ORDER BY COUNT(*) DESC"
             )
             by_feature = cur.fetchall()
-            cur.execute("SELECT COUNT(*), COALESCE(SUM(amount),0) FROM payments WHERE status='succeeded'")
+            cur.execute("SELECT COUNT(*), COALESCE(SUM(amount),0) FROM payments WHERE status='succeeded' AND amount > 0")
             paid_count, paid_sum = cur.fetchone()
+            cur.execute("SELECT COUNT(*), COUNT(*) FILTER (WHERE rewarded) FROM referrals")
+            ref_total, ref_done = cur.fetchone()
     except Exception as e:
         await update.message.reply_text(f"Не удалось посчитать: {e}")
         return
@@ -2115,7 +2267,8 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Всего заходило в бота: {total}.\nЗа последние 7 дней: {week}.\nЗа последние сутки: {day}.\n"
         f"Дошли до бесплатного разбора: {finished}.\n\n"
         f"По источникам за 14 дней:\n{source_lines}\n\n"
-        f"Оплаты всего: {paid_count} шт. на {paid_sum:.0f}₽\n{feature_lines}"
+        f"Оплаты всего: {paid_count} шт. на {paid_sum:.0f}₽\n{feature_lines}\n\n"
+        f"Приглашения друзей: пришли по ссылкам {ref_total}, прошли разбор и принесли подарок {ref_done}."
     )
 
 
@@ -2211,6 +2364,8 @@ def main():
     application.add_handler(CallbackQueryHandler(sign_check_start, pattern=f"^{SIGN_CHECK_CB}$"))
     application.add_handler(CallbackQueryHandler(sign_check_a, pattern="^sc_a:"))
     application.add_handler(CallbackQueryHandler(sign_check_b, pattern="^sc_b:"))
+    application.add_handler(CallbackQueryHandler(invite_friend, pattern=f"^{INVITE_CB}$"))
+    application.add_handler(CommandHandler("invite", invite_friend))
     application.add_handler(CommandHandler("broadcast", broadcast))
     application.add_handler(CommandHandler("stats", stats))
     application.add_handler(CommandHandler("reply", reply_to_user))
