@@ -4,6 +4,7 @@
 from datetime import date, datetime, timedelta, timezone
 
 import astro_calc as ac
+import navaratri
 
 MSK = timezone(timedelta(hours=3))
 
@@ -165,6 +166,9 @@ def build_daily_post(day: date, bot_link: str) -> str:
     if ingress:
         moon_line += f" Около {_jd_to_msk_hm(ingress[0])} мск Луна перейдёт в {SIGN_ACC[ingress[1]]}."
     lines += [moon_line, "", phase_text, ""]
+    sacred = navaratri.channel_block(day)
+    if sacred:
+        lines += [sacred, ""]
     lines += [f"✅ <b>На что направить силы:</b> {good}.", f"⛔ <b>Лучше избегать:</b> {bad}.", ""]
 
     events = stations + _aspect_texts(jd_noon)

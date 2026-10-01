@@ -762,8 +762,9 @@ def find_house_ingresses(planet_key, target_house, asc_sign_name, start_jd, wind
 def is_retrograde(planet_key, jd):
     """True, если планета в этот момент движется попятно (ретроградно):
     долгота через день меньше, чем сейчас, с учётом перехода через 360°."""
-    lon_now = planet_longitude(planet_key, jd)
-    lon_next = planet_longitude(planet_key, jd + 1)
+    # центральная разность: сдвиг на полдня вперёд давал ошибку станции около 12 часов
+    lon_now = planet_longitude(planet_key, jd - 0.5)
+    lon_next = planet_longitude(planet_key, jd + 0.5)
     diff = norm360(lon_next - lon_now)
     return diff > 180
 

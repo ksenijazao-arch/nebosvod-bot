@@ -23,7 +23,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import psycopg2
@@ -42,6 +42,7 @@ import wheel
 import cards
 import daily
 import venus_retro
+import navaratri
 import oracle
 import matrix
 
@@ -594,6 +595,7 @@ CATEGORY_MONEY_CB = "cat_money"
 CATEGORY_LOVE_CB = "cat_love"
 BACK_TO_MENU_CB = "back_menu"
 VENUS_RETRO_CB = "venus_retro"
+NAVARATRI_CB = "navaratri"
 INVITE_CB = "invite"
 ORACLE_CB = "oracle"
 MATRIX_CB = "matrix"
@@ -1492,7 +1494,10 @@ SPHERE_EMOJI = {"money": "💰", "love": "❤️", "career": "💼", "health": "
 
 
 def main_menu_keyboard():
-    return InlineKeyboardMarkup([
+    rows = []
+    if navaratri.feature_active(datetime.now(timezone.utc).date()):
+        rows.append([InlineKeyboardButton("🪔 Ваша Богиня Наваратри — бесплатно", callback_data=NAVARATRI_CB)])
+    return InlineKeyboardMarkup(rows + [
         [InlineKeyboardButton(f"💗 Ваша ретроградная Венера, {FEATURE_PRICE['venus_retro']} ₽", callback_data=VENUS_RETRO_CB)],
         [InlineKeyboardButton("🔮 Гармония и разбор карты  ›", callback_data=CATEGORY_CHART_CB)],
         [InlineKeyboardButton("💰 Деньги  ›", callback_data=CATEGORY_MONEY_CB)],
@@ -2069,6 +2074,30 @@ async def harmony(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=keyboard,
     )
     await send_menu(context, chat_id)
+
+
+async def navaratri_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    chat_id = query.message.chat_id
+    chart = context.user_data.get("chart")
+    if not chart:
+        await context.bot.send_message(chat_id=chat_id, text="Чтобы узнать свою Богиню, сначала пройдите бесплатный разбор: /start")
+        return
+    moon_sid = ac.sidereal_lon(ac.point_lon(chart["moon"]), chart["birth_jd"])
+    nak = ac.nakshatra_of(moon_sid)
+    idx = ac.NAKSHATRAS.index(nak["name"])
+    for msg in navaratri.build_personal(nak["name"], idx, datetime.now(timezone.utc).date()):
+        await send_bot(context, chat_id, msg, 1.5)
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("💌 Поделиться с близким", callback_data=INVITE_CB)],
+        [InlineKeyboardButton("« Назад в меню", callback_data=BACK_TO_MENU_CB)],
+    ])
+    await context.bot.send_message(
+        chat_id=chat_id,
+        text="Если хочется, чтобы близкий человек тоже узнал свою Богиню, отправьте ему ссылку на бот.",
+        reply_markup=kb,
+    )
 
 
 async def venus_retro_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2652,6 +2681,7 @@ def main():
     application.add_handler(CallbackQueryHandler(oracle_intro, pattern=f"^{ORACLE_CB}$"))
     application.add_handler(CallbackQueryHandler(oracle_answer, pattern=f"^{ORACLE_GET_CB}$"))
     application.add_handler(CallbackQueryHandler(venus_retro_handler, pattern=f"^{VENUS_RETRO_CB}$"))
+    application.add_handler(CallbackQueryHandler(navaratri_handler, pattern=f"^{NAVARATRI_CB}$"))
     application.add_handler(CommandHandler("invite", invite_friend))
     application.add_handler(CommandHandler("broadcast", broadcast))
     application.add_handler(CommandHandler("stats", stats))
