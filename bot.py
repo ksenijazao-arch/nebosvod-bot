@@ -43,6 +43,7 @@ import cards
 import daily
 import venus_retro
 import navaratri
+import retention
 import oracle
 import matrix
 
@@ -105,6 +106,8 @@ def db_init():
             )
         """)
         cur.execute("CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT)")
+        cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS weekly_off BOOLEAN NOT NULL DEFAULT FALSE")
+        cur.execute("ALTER TABLE payments ADD COLUMN IF NOT EXISTS reminded BOOLEAN NOT NULL DEFAULT FALSE")
         cur.execute("CREATE TABLE IF NOT EXISTS oracle_events (id SERIAL PRIMARY KEY, chat_id BIGINT, kind TEXT, created TIMESTAMPTZ DEFAULT now())")
         conn.commit()
 
@@ -600,6 +603,8 @@ INVITE_CB = "invite"
 ORACLE_CB = "oracle"
 MATRIX_CB = "matrix"
 ORACLE_GET_CB = "oracle_get"
+WEEKLY_OFF_CB = "weekly_off"
+WEEKLY_ON_CB = "weekly_on"
 
 
 def fmt_date(d: date) -> str:
@@ -2557,8 +2562,131 @@ async def channel_scheduler(application):
         await asyncio.sleep(300)
 
 
+def db_weekly_targets():
+    with db_connect() as conn, conn.cursor() as cur:
+        cur.execute("SELECT chat_id, chart_json FROM users WHERE chart_json IS NOT NULL AND NOT weekly_off")
+        return cur.fetchall()
+
+
+def db_set_weekly_off(chat_id, off):
+    with db_connect() as conn, conn.cursor() as cur:
+        cur.execute("UPDATE users SET weekly_off=%s WHERE chat_id=%s", (off, chat_id))
+        conn.commit()
+
+
+def db_due_reminders():
+    """Неоплаченные попытки старше суток (но не старше двух), по которым не было
+    ни оплаты, ни напоминания."""
+    with db_connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT DISTINCT p.chat_id, p.feature FROM payments p "
+            "WHERE p.status='pending' AND NOT p.reminded "
+            "AND p.created_at < now() - interval '24 hours' AND p.created_at > now() - interval '48 hours' "
+            "AND NOT EXISTS (SELECT 1 FROM payments q WHERE q.chat_id=p.chat_id AND q.feature=p.feature "
+            "AND q.status='succeeded' AND q.created_at > p.created_at - interval '1 hour')"
+        )
+        return cur.fetchall()
+
+
+def db_mark_reminded(chat_id, feature):
+    with db_connect() as conn, conn.cursor() as cur:
+        cur.execute("UPDATE payments SET reminded=TRUE WHERE chat_id=%s AND feature=%s AND status='pending'", (chat_id, feature))
+        conn.commit()
+
+
+def weekly_keyboard():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("📋 Открыть меню", callback_data=BACK_TO_MENU_CB)],
+        [InlineKeyboardButton("🔕 Не присылать недельный прогноз", callback_data=WEEKLY_OFF_CB)],
+    ])
+
+
+async def send_weekly_all(bot, week_start):
+    sent = 0
+    for chat_id, chart_json in db_weekly_targets():
+        try:
+            text = retention.build_weekly(json.loads(chart_json), week_start)
+            await bot.send_message(chat_id=chat_id, text=text, reply_markup=weekly_keyboard())
+            sent += 1
+        except Exception as e:
+            logging.info("недельный прогноз не доставлен %s: %s", chat_id, e)
+        await asyncio.sleep(0.15)
+    return sent
+
+
+async def retention_tick(bot):
+    from datetime import datetime as _dt
+    now_msk = _dt.now(retention.MSK)
+    # понедельник, 08:00–13:00 по Москве
+    if now_msk.weekday() == 0 and 8 <= now_msk.hour < 13:
+        week_start = now_msk.replace(hour=0, minute=0, second=0, microsecond=0)
+        key = f"weekly_moon_{week_start.date().isoformat()}"
+        if not db_kv_get(key):
+            db_kv_set(key, "sending")
+            n = await send_weekly_all(bot, week_start)
+            db_kv_set(key, f"sent {n}")
+            logging.info("недельный прогноз отправлен: %s", n)
+    # напоминания об оплате только днём
+    if 10 <= now_msk.hour < 21:
+        for chat_id, feature in db_due_reminders():
+            db_mark_reminded(chat_id, feature)
+            label = FEATURE_LABEL.get(feature)
+            if not label:
+                continue
+            kb = InlineKeyboardMarkup([[InlineKeyboardButton("🌙 Открыть", callback_data=feature)],
+                                       [InlineKeyboardButton("📋 Меню", callback_data=BACK_TO_MENU_CB)]])
+            try:
+                await bot.send_message(chat_id=chat_id, text=retention.reminder_text(label), reply_markup=kb)
+            except Exception as e:
+                logging.info("напоминание не доставлено %s: %s", chat_id, e)
+
+
+async def retention_scheduler(application):
+    while True:
+        try:
+            if DATABASE_URL:
+                await retention_tick(application.bot)
+        except Exception:
+            logging.exception("ошибка в retention_scheduler")
+        await asyncio.sleep(600)
+
+
+async def weekly_off(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    db_set_weekly_off(query.message.chat_id, True)
+    kb = InlineKeyboardMarkup([[InlineKeyboardButton("🔔 Включить обратно", callback_data=WEEKLY_ON_CB)]])
+    await context.bot.send_message(chat_id=query.message.chat_id,
+                                   text="Хорошо, недельный прогноз больше не придёт. Если захотите вернуть, нажмите кнопку ниже.",
+                                   reply_markup=kb)
+
+
+async def weekly_on(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    db_set_weekly_off(query.message.chat_id, False)
+    await context.bot.send_message(chat_id=query.message.chat_id, text="Готово, по понедельникам снова пришлю вашу неделю по Луне 🌙")
+
+
+async def weekly_preview(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/weekly_preview пароль — прислать себе свою неделю по Луне (с текущего понедельника)."""
+    from datetime import datetime as _dt, timedelta as _td
+    parts = (update.message.text or "").split(maxsplit=1)
+    if len(parts) < 2 or parts[1] != BROADCAST_PASSWORD or not BROADCAST_PASSWORD:
+        await update.message.reply_text("Формат: /weekly_preview пароль")
+        return
+    chart = context.user_data.get("chart")
+    if not chart:
+        await update.message.reply_text("Сначала пройдите разбор: /start")
+        return
+    now_msk = _dt.now(retention.MSK)
+    week_start = (now_msk - _td(days=now_msk.weekday())).replace(hour=0, minute=0, second=0, microsecond=0)
+    await update.message.reply_text(retention.build_weekly(chart, week_start), reply_markup=weekly_keyboard())
+
+
 async def _post_init(application):
     application.create_task(channel_scheduler(application))
+    application.create_task(retention_scheduler(application))
 
 
 async def channel_preview(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2682,11 +2810,14 @@ def main():
     application.add_handler(CallbackQueryHandler(oracle_answer, pattern=f"^{ORACLE_GET_CB}$"))
     application.add_handler(CallbackQueryHandler(venus_retro_handler, pattern=f"^{VENUS_RETRO_CB}$"))
     application.add_handler(CallbackQueryHandler(navaratri_handler, pattern=f"^{NAVARATRI_CB}$"))
+    application.add_handler(CallbackQueryHandler(weekly_off, pattern=f"^{WEEKLY_OFF_CB}$"))
+    application.add_handler(CallbackQueryHandler(weekly_on, pattern=f"^{WEEKLY_ON_CB}$"))
     application.add_handler(CommandHandler("invite", invite_friend))
     application.add_handler(CommandHandler("broadcast", broadcast))
     application.add_handler(CommandHandler("stats", stats))
     application.add_handler(CommandHandler("reply", reply_to_user))
     application.add_handler(CommandHandler("channel_preview", channel_preview))
+    application.add_handler(CommandHandler("weekly_preview", weekly_preview))
     application.add_handler(CommandHandler("channel_post", channel_post_now))
 
     log.info("Небосвод запущен, жду сообщений…")
