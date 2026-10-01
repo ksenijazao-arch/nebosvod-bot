@@ -416,8 +416,8 @@ async def restore_chart_if_needed(update: Update, context: ContextTypes.DEFAULT_
     разбор, тихо подставляет его обратно в user_data, чтобы человеку не
     приходилось проходить дату, время и город заново только из-за того,
     что сервер перезапустился, не потому что он сам этого просил."""
-    if context.user_data.get("chart"):
-        return
+    if context.user_data is None or context.user_data.get("chart"):
+        return  # посты и правки в канале приходят без пользователя
     chat_id = update.effective_chat.id if update.effective_chat else None
     if not chat_id:
         return
