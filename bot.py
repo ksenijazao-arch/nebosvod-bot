@@ -44,6 +44,7 @@ import daily
 import venus_retro
 import navaratri
 import retention
+import channel_content
 import oracle
 import matrix
 
@@ -2547,6 +2548,30 @@ async def post_daily_to_channel(bot, force=False):
     return True
 
 
+async def post_midday_to_channel(bot, force=False):
+    today = _msk_today()
+    if not force and db_kv_get("channel_mid_last") == today.isoformat():
+        return False
+    kind, payload = channel_content.midday_item(today)
+    if kind == "poll":
+        q, opts = payload
+        await bot.send_poll(chat_id=CHANNEL_ID, question=q, options=opts, is_anonymous=True)
+    else:
+        await bot.send_message(chat_id=CHANNEL_ID, text=payload, parse_mode="HTML", disable_web_page_preview=True)
+    db_kv_set("channel_mid_last", today.isoformat())
+    return True
+
+
+async def post_evening_to_channel(bot, force=False):
+    today = _msk_today()
+    if not force and db_kv_get("channel_eve_last") == today.isoformat():
+        return False
+    await bot.send_message(chat_id=CHANNEL_ID, text=channel_content.nakshatra_post(today),
+                           parse_mode="HTML", disable_web_page_preview=True)
+    db_kv_set("channel_eve_last", today.isoformat())
+    return True
+
+
 async def channel_scheduler(application):
     """Раз в 5 минут проверяет, не пора ли публиковать. Окно публикации —
     с 08:00 до 13:00 по Москве, чтобы после перезапуска сервера утренний
@@ -2559,6 +2584,14 @@ async def channel_scheduler(application):
                 await post_daily_to_channel(application.bot)
         except Exception:
             logging.exception("не удалось опубликовать пост дня")
+        try:
+            mins = now.hour * 60 + now.minute
+            if 10 * 60 <= mins < 13 * 60:          # 13:00–16:00 мск
+                await post_midday_to_channel(application.bot)
+            if 16 * 60 + 30 <= mins < 19 * 60:     # 19:30–22:00 мск
+                await post_evening_to_channel(application.bot)
+        except Exception:
+            logging.exception("не удалось опубликовать дневной/вечерний пост")
         await asyncio.sleep(300)
 
 
@@ -2699,6 +2732,21 @@ async def channel_preview(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(text, parse_mode="HTML", disable_web_page_preview=True)
 
 
+async def channel_preview_more(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/channel_preview2 пароль — дневной и вечерний посты сегодняшнего дня вам в личку."""
+    parts = (update.message.text or "").split(maxsplit=1)
+    if len(parts) < 2 or parts[1] != BROADCAST_PASSWORD or not BROADCAST_PASSWORD:
+        await update.message.reply_text("Формат: /channel_preview2 пароль")
+        return
+    today = _msk_today()
+    kind, payload = channel_content.midday_item(today)
+    if kind == "poll":
+        await context.bot.send_poll(chat_id=update.effective_chat.id, question=payload[0], options=payload[1], is_anonymous=True)
+    else:
+        await update.message.reply_text(payload, parse_mode="HTML", disable_web_page_preview=True)
+    await update.message.reply_text(channel_content.nakshatra_post(today), parse_mode="HTML", disable_web_page_preview=True)
+
+
 async def channel_post_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """/channel_post пароль — публикует сегодняшний пост в канал прямо сейчас."""
     parts = (update.message.text or "").split(maxsplit=1)
@@ -2818,6 +2866,7 @@ def main():
     application.add_handler(CommandHandler("reply", reply_to_user))
     application.add_handler(CommandHandler("channel_preview", channel_preview))
     application.add_handler(CommandHandler("weekly_preview", weekly_preview))
+    application.add_handler(CommandHandler("channel_preview2", channel_preview_more))
     application.add_handler(CommandHandler("channel_post", channel_post_now))
 
     log.info("Небосвод запущен, жду сообщений…")
