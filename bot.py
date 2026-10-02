@@ -2669,7 +2669,7 @@ async def retention_tick(bot):
             kb = InlineKeyboardMarkup([[InlineKeyboardButton("🌙 Открыть", callback_data=feature)],
                                        [InlineKeyboardButton("📋 Меню", callback_data=BACK_TO_MENU_CB)]])
             try:
-                await bot.send_message(chat_id=chat_id, text=retention.reminder_text(label), reply_markup=kb)
+                await bot.send_message(chat_id=chat_id, text=retention.reminder_text(label, feature), reply_markup=kb)
             except Exception as e:
                 logging.info("напоминание не доставлено %s: %s", chat_id, e)
 
