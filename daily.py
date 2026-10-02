@@ -83,7 +83,7 @@ NAK_KEY = [
 
 
 def _moon_sign_at(jd):
-    return ac.sign_of(ac.moon_longitude(jd))["sign"]
+    return ac.sign_of(ac.sidereal_lon(ac.moon_longitude(jd), jd))["sign"]
 
 
 def _find_moon_ingress(jd_start, jd_end):
