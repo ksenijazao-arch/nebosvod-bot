@@ -2609,21 +2609,22 @@ def db_set_weekly_off(chat_id, off):
 
 def db_due_reminders():
     """Неоплаченные попытки старше суток (но не старше двух), по которым не было
-    ни оплаты, ни напоминания."""
+    оплаты. Напоминание приходит человеку только один раз за всё время."""
     with db_connect() as conn, conn.cursor() as cur:
         cur.execute(
             "SELECT DISTINCT p.chat_id, p.feature FROM payments p "
             "WHERE p.status='pending' AND NOT p.reminded "
             "AND p.created_at < now() - interval '24 hours' AND p.created_at > now() - interval '48 hours' "
             "AND NOT EXISTS (SELECT 1 FROM payments q WHERE q.chat_id=p.chat_id AND q.feature=p.feature "
-            "AND q.status='succeeded' AND q.created_at > p.created_at - interval '1 hour')"
+            "AND q.status='succeeded' AND q.created_at > p.created_at - interval '1 hour') "
+            "AND NOT EXISTS (SELECT 1 FROM payments r WHERE r.chat_id=p.chat_id AND r.reminded)"
         )
         return cur.fetchall()
 
 
 def db_mark_reminded(chat_id, feature):
     with db_connect() as conn, conn.cursor() as cur:
-        cur.execute("UPDATE payments SET reminded=TRUE WHERE chat_id=%s AND feature=%s AND status='pending'", (chat_id, feature))
+        cur.execute("UPDATE payments SET reminded=TRUE WHERE chat_id=%s AND feature=%s", (chat_id, feature))
         conn.commit()
 
 
@@ -2661,8 +2662,12 @@ async def retention_tick(bot):
             logging.info("недельный прогноз отправлен: %s", n)
     # напоминания об оплате только днём
     if 10 <= now_msk.hour < 21:
+        done = set()
         for chat_id, feature in db_due_reminders():
             db_mark_reminded(chat_id, feature)
+            if chat_id in done:
+                continue
+            done.add(chat_id)
             label = FEATURE_LABEL.get(feature)
             if not label:
                 continue
