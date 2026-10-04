@@ -1516,7 +1516,6 @@ def main_menu_keyboard():
         [InlineKeyboardButton(f"🌀 Матрица судьбы, {FEATURE_PRICE['matrix']} ₽", callback_data=MATRIX_CB)],
         [InlineKeyboardButton("🌅 Что ждёт меня завтра, 100 ₽/сутки", callback_data=TOMORROW_CB)],
         [InlineKeyboardButton("💌 Поделиться с близким", callback_data=INVITE_CB)],
-        [InlineKeyboardButton("📸 Небосвод в Instagram: все 27 накшатр", url="https://www.instagram.com/astroksenija/")],
         [InlineKeyboardButton("🔄 Начать заново", callback_data=RESTART_CB)],
     ])
 
