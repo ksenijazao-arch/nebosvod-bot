@@ -28,7 +28,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import psycopg2
 
-from telegram import ForceReply, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, ReplyKeyboardRemove, Update
+from telegram import ForceReply, InlineKeyboardButton, InlineKeyboardMarkup, MenuButtonWebApp, ReplyKeyboardMarkup, ReplyKeyboardRemove, Update, WebAppInfo
 from telegram.ext import (
     Application, ApplicationHandlerStop, CallbackQueryHandler, CommandHandler, ContextTypes,
     ConversationHandler, MessageHandler, TypeHandler, filters,
@@ -46,6 +46,7 @@ import navaratri
 import retention
 import channel_content
 import oracle
+import special_days
 import matrix
 
 DATABASE_URL = os.environ.get("DATABASE_URL")
@@ -108,6 +109,7 @@ def db_init():
         """)
         cur.execute("CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT)")
         cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS weekly_off BOOLEAN NOT NULL DEFAULT FALSE")
+        cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS alerts_off BOOLEAN NOT NULL DEFAULT FALSE")
         cur.execute("ALTER TABLE payments ADD COLUMN IF NOT EXISTS reminded BOOLEAN NOT NULL DEFAULT FALSE")
         cur.execute("CREATE TABLE IF NOT EXISTS oracle_events (id SERIAL PRIMARY KEY, chat_id BIGINT, kind TEXT, created TIMESTAMPTZ DEFAULT now())")
         conn.commit()
@@ -136,6 +138,8 @@ def db_remember_user(chat_id, source=None):
 
 # ---------- Приглашения друзей ----------
 REFERRAL_PREFIX = "ref_"
+# Игра «Мой небосвод» (Telegram Mini App), лежит на лендинге
+GAME_URL = os.environ.get("GAME_URL", "https://nebosvod-landing.onrender.com/igra.html")
 REFERRAL_GIFT_FEATURE = "tomorrow"
 
 
@@ -597,6 +601,7 @@ SIGN_CHECK_CB = "sign_check_start"
 CATEGORY_CHART_CB = "cat_chart"
 CATEGORY_MONEY_CB = "cat_money"
 CATEGORY_LOVE_CB = "cat_love"
+CATEGORY_NOW_CB = "cat_now"
 BACK_TO_MENU_CB = "back_menu"
 VENUS_RETRO_CB = "venus_retro"
 NAVARATRI_CB = "navaratri"
@@ -605,6 +610,8 @@ ORACLE_CB = "oracle"
 MATRIX_CB = "matrix"
 ORACLE_GET_CB = "oracle_get"
 WEEKLY_OFF_CB = "weekly_off"
+ALERTS_OFF_CB = "alerts_off"
+ALERTS_ON_CB = "alerts_on"
 WEEKLY_ON_CB = "weekly_on"
 
 
@@ -637,6 +644,18 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     is_new = db_remember_user(chat_id, source)
     if is_new and source and source.startswith(REFERRAL_PREFIX) and source[len(REFERRAL_PREFIX):].isdigit():
         db_add_referral(chat_id, int(source[len(REFERRAL_PREFIX):]))
+
+    if context.user_data.get("chart") and source == "game_forecast":
+        await send_bot(
+            context, chat_id,
+            "Небо завтра будет другим. Что оно готовит лично вам, по часам и по вашей карте, — в прогнозе на завтра.",
+            0.5,
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🌅 Открыть прогноз на завтра", callback_data=TOMORROW_CB)],
+                [InlineKeyboardButton("🌌 Ещё немного неба", web_app=WebAppInfo(url=GAME_URL))],
+            ]),
+        )
+        return ConversationHandler.END
 
     if context.user_data.get("chart"):
         await send_bot(context, chat_id, "С возвращением! Ваш разбор уже готов, не нужно проходить его заново.", 0.5)
@@ -1054,7 +1073,7 @@ def invite_keyboard(chat_id):
     link = referral_link(chat_id)
     share_url = "https://t.me/share/url?" + urllib.parse.urlencode({
         "url": link,
-        "text": "В индийской астрологии у каждого есть накшатра — лунная стоянка, которая говорит о человеке точнее знака зодиака. Узнай свою: первый разбор в Небосводе бесплатный 🌙",
+        "text": "В индийской астрологии у каждого есть накшатра — лунная стоянка, которая говорит о человеке точнее знака зодиака. Узнай свою в Небосводе 🌙",
     })
     return InlineKeyboardMarkup([[InlineKeyboardButton("💌 Поделиться с близким", url=share_url)]])
 
@@ -1087,7 +1106,7 @@ async def send_vedic_story(context, chat_id, sun_west, sun_vedic, moon_vedic, na
     await send_bot(
         context, chat_id,
         "Если захочется поделиться этим знанием с близким человеком, вот ваша личная ссылка. "
-        "Когда он пройдёт бесплатный разбор, я подарю вам «Что ждёт меня завтра» на сутки 🎁",
+        "Когда он пройдёт разбор, я подарю вам «Что ждёт меня завтра» на сутки 🎁",
         1.0, reply_markup=invite_keyboard(chat_id),
     )
 
@@ -1100,7 +1119,7 @@ async def reward_referrer_if_any(context, chat_id):
         await context.bot.send_message(
             chat_id=referrer,
             text="🎁 Человек, которого вы пригласили, только что прошёл разбор в Небосводе. Спасибо! "
-                 "Дарю вам «Что ждёт меня завтра» на сутки, бесплатно.",
+                 "Дарю вам «Что ждёт меня завтра» на сутки.",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🌅 Открыть прогноз на завтра", callback_data=TOMORROW_CB)]]),
         )
     except Exception:
@@ -1117,7 +1136,7 @@ async def invite_friend(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await context.bot.send_message(
         chat_id=chat_id,
         text="Если хочется поделиться Небосводом с близким человеком, отправьте ему свою личную ссылку. "
-             "Когда он пройдёт бесплатный разбор, я подарю вам «Что ждёт меня завтра» на сутки 🎁 "
+             "Когда он пройдёт разбор, я подарю вам «Что ждёт меня завтра» на сутки 🎁 "
              "За каждого нового человека — новые сутки.\n\n"
              f"Ваша личная ссылка:\n{referral_link(chat_id)}{extra}",
         reply_markup=invite_keyboard(chat_id),
@@ -1499,24 +1518,22 @@ async def tomorrow_choghadiya(update: Update, context: ContextTypes.DEFAULT_TYPE
 SPHERE_EMOJI = {"money": "💰", "love": "❤️", "career": "💼", "health": "🌿"}
 
 
+VENUS_RETRO_UNTIL = date(2026, 11, 14)  # после разворота Венеры вперёд кнопка прячется
+
+
+def _venus_retro_active():
+    return datetime.now(timezone.utc).date() <= VENUS_RETRO_UNTIL
+
+
 def main_menu_keyboard():
-    rows = []
-    if navaratri.feature_active(datetime.now(timezone.utc).date()):
-        rows.append([InlineKeyboardButton("🪔 Ваша Богиня Наваратри — бесплатно", callback_data=NAVARATRI_CB)])
-    return InlineKeyboardMarkup(rows + [
-        [InlineKeyboardButton(f"💗 Ваша ретроградная Венера, {FEATURE_PRICE['venus_retro']} ₽", callback_data=VENUS_RETRO_CB)],
-        [InlineKeyboardButton("🔮 Гармония и разбор карты  ›", callback_data=CATEGORY_CHART_CB)],
-        [InlineKeyboardButton("💰 Деньги  ›", callback_data=CATEGORY_MONEY_CB)],
-        [InlineKeyboardButton("❤️ Отношения  ›", callback_data=CATEGORY_LOVE_CB)],
-        [InlineKeyboardButton(f"{SPHERE_EMOJI['career']} {ct.SPHERES['career']['title']}", callback_data=f"{SPHERE_CB_PREFIX}career")],
-        [InlineKeyboardButton(f"{SPHERE_EMOJI['health']} {ct.SPHERES['health']['title']}", callback_data=f"{SPHERE_CB_PREFIX}health")],
-        [InlineKeyboardButton("🔭 Узнать важные даты", callback_data=FORECAST_CB)],
-        [InlineKeyboardButton("✨ Жизнь, которую вы не прожили", callback_data=UNLIVED_CB)],
-        [InlineKeyboardButton("🔮 Получить ответ на вопрос — бесплатно", callback_data=ORACLE_CB)],
-        [InlineKeyboardButton(f"🌀 Матрица судьбы, {FEATURE_PRICE['matrix']} ₽", callback_data=MATRIX_CB)],
-        [InlineKeyboardButton("🌅 Что ждёт меня завтра, 100 ₽/сутки", callback_data=TOMORROW_CB)],
-        [InlineKeyboardButton("💌 Поделиться с близким", callback_data=INVITE_CB)],
-        [InlineKeyboardButton("🔄 Начать заново", callback_data=RESTART_CB)],
+    """Главное меню: шесть кнопок по вопросам, с которыми приходит человек."""
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🌌 Мой небосвод: игра, чтобы успокоиться", web_app=WebAppInfo(url=GAME_URL))],
+        [InlineKeyboardButton("🌙 Сейчас на небе  ›", callback_data=CATEGORY_NOW_CB)],
+        [InlineKeyboardButton("❤️ Любовь  ›", callback_data=CATEGORY_LOVE_CB)],
+        [InlineKeyboardButton("💰 Деньги и работа  ›", callback_data=CATEGORY_MONEY_CB)],
+        [InlineKeyboardButton("🔮 Я и моя карта  ›", callback_data=CATEGORY_CHART_CB)],
+        [InlineKeyboardButton("✨ Ответ на вопрос", callback_data=ORACLE_CB)],
     ])
 
 
@@ -1526,16 +1543,37 @@ def category_keyboard(buttons):
     return InlineKeyboardMarkup(rows)
 
 
+async def category_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    today = datetime.now(timezone.utc).date()
+    buttons = [("🌅 Что ждёт меня завтра, 100 ₽/сутки", TOMORROW_CB)]
+    if _venus_retro_active():
+        buttons.append((f"💗 Ваша ретроградная Венера, {FEATURE_PRICE['venus_retro']} ₽", VENUS_RETRO_CB))
+    if navaratri.feature_active(today):
+        buttons.append(("🪔 Ваша Богиня Наваратри", NAVARATRI_CB))
+    buttons.append(("🔭 Важные даты на два года", FORECAST_CB))
+    await context.bot.send_message(
+        chat_id=query.message.chat_id,
+        text="Что сейчас происходит на небе и как это ложится на вашу карту.",
+        reply_markup=category_keyboard(buttons),
+    )
+
+
 async def category_chart(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     kb = category_keyboard([
-        ("🌡️ Гармония моей карты — бесплатно", HARMONY_CB),
+        ("🌡️ Гармония моей карты", HARMONY_CB),
         (f"🪐 Расширенный разбор карты, {FEATURE_PRICE['extended_natal']} ₽", EXTENDED_NATAL_CB),
+        (f"🌀 Матрица судьбы, {FEATURE_PRICE['matrix']} ₽", MATRIX_CB),
+        ("✨ Жизнь, которую вы не прожили", UNLIVED_CB),
+        (f"{SPHERE_EMOJI['health']} {ct.SPHERES['health']['title']}", f"{SPHERE_CB_PREFIX}health"),
+        ("🔄 Пройти разбор заново", RESTART_CB),
     ])
     await context.bot.send_message(
         chat_id=query.message.chat_id,
-        text="Два взгляда на вашу карту: короткий бесплатный балл гармонии или полный разбор всех планет и точек.",
+        text="Всё о вас самих: ваша карта, её гармония, матрица судьбы и жизнь, которая могла бы быть.",
         reply_markup=kb,
     )
 
@@ -1544,12 +1582,13 @@ async def category_money(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     kb = category_keyboard([
-        ("💰 Разбор денежной сферы — бесплатно", f"{SPHERE_CB_PREFIX}money"),
-        ("🪙 Денежный ритуал по карте, 99 ₽", MONEY_RITUAL_CB),
+        ("💰 Разбор денежной сферы", f"{SPHERE_CB_PREFIX}money"),
+        (f"🪙 Денежный ритуал по карте, {FEATURE_PRICE.get('money_ritual', 99)} ₽", MONEY_RITUAL_CB),
+        (f"{SPHERE_EMOJI['career']} {ct.SPHERES['career']['title']}", f"{SPHERE_CB_PREFIX}career"),
     ])
     await context.bot.send_message(
         chat_id=query.message.chat_id,
-        text="Что посмотреть про деньги: бесплатный разбор денежной сферы или личный ритуал под вашу денежную планету.",
+        text="Деньги и работа: как устроена ваша денежная сфера, личный ритуал под вашу денежную планету и где ваше дело.",
         reply_markup=kb,
     )
 
@@ -1557,16 +1596,17 @@ async def category_money(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def category_love(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    kb = category_keyboard([
-        ("❤️ Разбор сферы отношений — бесплатно", f"{SPHERE_CB_PREFIX}love"),
-        ("💫 Быстрая проверка по знаку — бесплатно", SIGN_CHECK_CB),
-        ("💞 Совместимость с партнёром, 199 ₽", COMPAT_CB),
-        (f"💗 Ваша ретроградная Венера, {FEATURE_PRICE['venus_retro']} ₽", VENUS_RETRO_CB),
-    ])
+    buttons = [
+        ("❤️ Разбор сферы отношений", f"{SPHERE_CB_PREFIX}love"),
+        ("💫 Быстрая проверка по знаку", SIGN_CHECK_CB),
+        (f"💞 Совместимость с партнёром, {FEATURE_PRICE.get('compat', 199)} ₽", COMPAT_CB),
+    ]
+    if _venus_retro_active():
+        buttons.append((f"💗 Ваша ретроградная Венера, {FEATURE_PRICE['venus_retro']} ₽", VENUS_RETRO_CB))
     await context.bot.send_message(
         chat_id=query.message.chat_id,
-        text="Что посмотреть про отношения: бесплатный разбор вашей сферы любви или совместимость с конкретным человеком.",
-        reply_markup=kb,
+        text="Что посмотреть про отношения: вашу сферу любви или совместимость с конкретным человеком.",
+        reply_markup=category_keyboard(buttons),
     )
 
 
@@ -2088,7 +2128,7 @@ async def navaratri_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = query.message.chat_id
     chart = context.user_data.get("chart")
     if not chart:
-        await context.bot.send_message(chat_id=chat_id, text="Чтобы узнать свою Богиню, сначала пройдите бесплатный разбор: /start")
+        await context.bot.send_message(chat_id=chat_id, text="Чтобы узнать свою Богиню, сначала пройдите разбор: /start")
         return
     moon_sid = ac.sidereal_lon(ac.point_lon(chart["moon"]), chart["birth_jd"])
     nak = ac.nakshatra_of(moon_sid)
@@ -2115,7 +2155,7 @@ async def venus_retro_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
 async def _venus_retro_core(chat_id: int, context: ContextTypes.DEFAULT_TYPE):
     chart = context.user_data.get("chart")
     if not chart:
-        await context.bot.send_message(chat_id=chat_id, text="Сначала пройдите бесплатный разбор: /start")
+        await context.bot.send_message(chat_id=chat_id, text="Сначала пройдите разбор: /start")
         return
     if not await payment_gate(chat_id, context, "venus_retro"):
         return
@@ -2660,6 +2700,16 @@ async def retention_tick(bot):
             n = await send_weekly_all(bot, week_start)
             db_kv_set(key, f"sent {n}")
             logging.info("недельный прогноз отправлен: %s", n)
+    # важные дни: накануне, с 19:00 по Москве
+    if 19 <= now_msk.hour < 22:
+        for ev in special_days.due(now_msk.date().isoformat()):
+            key = f"special_{ev['id']}"
+            if db_kv_get(key):
+                continue
+            db_kv_set(key, "sending")
+            n = await send_special_all(bot, ev)
+            db_kv_set(key, f"sent {n}")
+            logging.info("важный день %s отправлен: %s", ev["id"], n)
     # напоминания об оплате только днём
     if 10 <= now_msk.hour < 21:
         done = set()
@@ -2677,6 +2727,81 @@ async def retention_tick(bot):
                 await bot.send_message(chat_id=chat_id, text=retention.reminder_text(label, feature), reply_markup=kb)
             except Exception as e:
                 logging.info("напоминание не доставлено %s: %s", chat_id, e)
+
+
+def db_alert_targets():
+    with db_connect() as conn, conn.cursor() as cur:
+        cur.execute("SELECT chat_id FROM users WHERE NOT alerts_off")
+        return [row[0] for row in cur.fetchall()]
+
+
+def db_set_alerts_off(chat_id, off):
+    with db_connect() as conn, conn.cursor() as cur:
+        cur.execute("UPDATE users SET alerts_off=%s WHERE chat_id=%s", (off, chat_id))
+        conn.commit()
+
+
+def special_keyboard(kinds):
+    labels = {
+        "tomorrow": ("🌅 Что ждёт меня завтра", TOMORROW_CB),
+        "navaratri": ("🪔 Моя Богиня Наваратри", NAVARATRI_CB),
+        "forecast": ("🔭 Мои важные даты", FORECAST_CB),
+        "oracle": ("✨ Задать вопрос", ORACLE_CB),
+        "venus": ("💗 Моя ретроградная Венера", VENUS_RETRO_CB),
+    }
+    rows = []
+    for k in kinds:
+        if k == "game":
+            rows.append([InlineKeyboardButton("🌌 Немного неба: игра", web_app=WebAppInfo(url=GAME_URL))])
+        elif k in labels:
+            text, cb = labels[k]
+            rows.append([InlineKeyboardButton(text, callback_data=cb)])
+    rows.append([InlineKeyboardButton("🔕 Не присылать о важных днях", callback_data=ALERTS_OFF_CB)])
+    return InlineKeyboardMarkup(rows)
+
+
+async def send_special_all(bot, ev):
+    sent = 0
+    kb = special_keyboard(ev.get("buttons", []))
+    for chat_id in db_alert_targets():
+        try:
+            await bot.send_message(chat_id=chat_id, text=ev["text"], reply_markup=kb)
+            sent += 1
+        except Exception as e:
+            logging.info("важный день не доставлен %s: %s", chat_id, e)
+        await asyncio.sleep(0.05)
+    return sent
+
+
+async def alerts_off(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    db_set_alerts_off(query.message.chat_id, True)
+    kb = InlineKeyboardMarkup([[InlineKeyboardButton("🔔 Включить обратно", callback_data=ALERTS_ON_CB)]])
+    await context.bot.send_message(chat_id=query.message.chat_id,
+                                   text="Хорошо, о важных днях больше писать не буду. Если захотите вернуть, нажмите кнопку ниже.",
+                                   reply_markup=kb)
+
+
+async def alerts_on(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    db_set_alerts_off(query.message.chat_id, False)
+    await context.bot.send_message(chat_id=query.message.chat_id,
+                                   text="Готово, накануне важных дней снова напишу 🌙")
+
+
+async def special_preview(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/special_preview пароль — прислать себе ближайшие сообщения о важных днях (никому больше не уходят)."""
+    parts = (update.message.text or "").split(maxsplit=1)
+    if len(parts) < 2 or parts[1] != BROADCAST_PASSWORD or not BROADCAST_PASSWORD:
+        await update.message.reply_text("Формат: /special_preview пароль")
+        return
+    from datetime import datetime as _dt
+    today = _dt.now(retention.MSK).date().isoformat()
+    for ev in special_days.upcoming(today):
+        await update.message.reply_text(f"[уйдёт {ev['send_on']} в 19:00 мск]\n\n{ev['text']}",
+                                        reply_markup=special_keyboard(ev.get("buttons", [])))
 
 
 async def retention_scheduler(application):
@@ -2723,6 +2848,12 @@ async def weekly_preview(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def _post_init(application):
+    try:
+        await application.bot.set_chat_menu_button(
+            menu_button=MenuButtonWebApp(text="🌌 Небо", web_app=WebAppInfo(url=GAME_URL))
+        )
+    except Exception as e:
+        log.warning("Не удалось поставить кнопку игры в меню: %s", e)
     application.create_task(channel_scheduler(application))
     application.create_task(retention_scheduler(application))
 
@@ -2841,6 +2972,7 @@ def main():
     application.add_handler(CallbackQueryHandler(unlived, pattern=f"^{UNLIVED_CB}$"))
     application.add_handler(CallbackQueryHandler(harmony, pattern=f"^{HARMONY_CB}$"))
     application.add_handler(CallbackQueryHandler(extended_natal, pattern=f"^{EXTENDED_NATAL_CB}$"))
+    application.add_handler(CallbackQueryHandler(category_now, pattern=f"^{CATEGORY_NOW_CB}$"))
     application.add_handler(CallbackQueryHandler(category_chart, pattern=f"^{CATEGORY_CHART_CB}$"))
     application.add_handler(CallbackQueryHandler(category_money, pattern=f"^{CATEGORY_MONEY_CB}$"))
     application.add_handler(CallbackQueryHandler(category_love, pattern=f"^{CATEGORY_LOVE_CB}$"))
@@ -2864,6 +2996,9 @@ def main():
     application.add_handler(CallbackQueryHandler(venus_retro_handler, pattern=f"^{VENUS_RETRO_CB}$"))
     application.add_handler(CallbackQueryHandler(navaratri_handler, pattern=f"^{NAVARATRI_CB}$"))
     application.add_handler(CallbackQueryHandler(weekly_off, pattern=f"^{WEEKLY_OFF_CB}$"))
+    application.add_handler(CallbackQueryHandler(alerts_off, pattern=f"^{ALERTS_OFF_CB}$"))
+    application.add_handler(CallbackQueryHandler(alerts_on, pattern=f"^{ALERTS_ON_CB}$"))
+    application.add_handler(CommandHandler("special_preview", special_preview))
     application.add_handler(CallbackQueryHandler(weekly_on, pattern=f"^{WEEKLY_ON_CB}$"))
     application.add_handler(CommandHandler("invite", invite_friend))
     application.add_handler(CommandHandler("broadcast", broadcast))

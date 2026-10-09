@@ -232,7 +232,7 @@ def render_compatibility_story(percent, out_path, width=1080, height=1920):
 
     cta_font = _font(34, bold=True)
     sub_font = _font(28)
-    _centered_text(draw, width / 2, height - 220, "Проверь свою пару бесплатно", cta_font, WHITE)
+    _centered_text(draw, width / 2, height - 220, "Проверь свою пару в Небосводе", cta_font, WHITE)
     _centered_text(draw, width / 2, height - 170, "@nebosvod_astro_bot", sub_font, GOLD)
 
     img.save(out_path)
