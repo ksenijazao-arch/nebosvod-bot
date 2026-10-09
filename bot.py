@@ -1528,7 +1528,7 @@ def _venus_retro_active():
 def main_menu_keyboard():
     """Главное меню: шесть кнопок по вопросам, с которыми приходит человек."""
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🌌 Мой небосвод: игра, чтобы успокоиться", web_app=WebAppInfo(url=GAME_URL))],
+        [InlineKeyboardButton("🌌 ИГРА. Побудь наедине со звёздами", web_app=WebAppInfo(url=GAME_URL))],
         [InlineKeyboardButton("🌙 Сейчас на небе  ›", callback_data=CATEGORY_NOW_CB)],
         [InlineKeyboardButton("❤️ Любовь  ›", callback_data=CATEGORY_LOVE_CB)],
         [InlineKeyboardButton("💰 Деньги и работа  ›", callback_data=CATEGORY_MONEY_CB)],
