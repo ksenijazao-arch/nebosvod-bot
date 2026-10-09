@@ -2683,6 +2683,23 @@ class _HealthHandler(BaseHTTPRequestHandler):
                 self.end_headers()
                 self.wfile.write(json.dumps(body, ensure_ascii=False).encode("utf-8"))
                 return
+            if self.path.rstrip("/") == "/game/me":
+                length = int(self.headers.get("Content-Length", "0"))
+                data = json.loads(self.rfile.read(min(length, 100_000)).decode("utf-8")) if length else {}
+                uid = _check_webapp_init_data(data.get("initData", ""))
+                body = {"ok": False}
+                if uid and DATABASE_URL:
+                    with db_connect() as conn, conn.cursor() as cur:
+                        cur.execute("SELECT date_str FROM users WHERE chat_id=%s", (uid,))
+                        row = cur.fetchone()
+                    if row and row[0] and re.match(r"^\d{4}-\d{2}-\d{2}$", row[0]):
+                        body = {"ok": True, "date": row[0]}
+                self.send_response(200 if uid else 403)
+                self._cors()
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps(body).encode("utf-8"))
+                return
             if self.path.rstrip("/") == "/game/story":
                 length = int(self.headers.get("Content-Length", "0"))
                 if 0 < length <= 4_000_000:
