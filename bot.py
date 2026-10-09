@@ -13,6 +13,8 @@
 """
 import asyncio
 import base64
+import hashlib
+import hmac
 import json
 import logging
 import os
@@ -24,11 +26,11 @@ import urllib.parse
 import urllib.request
 import uuid
 from datetime import date, datetime, timedelta, timezone
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
 
 import psycopg2
 
-from telegram import ForceReply, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, ReplyKeyboardRemove, Update
+from telegram import ForceReply, InlineKeyboardButton, InlineKeyboardMarkup, MenuButtonWebApp, ReplyKeyboardMarkup, ReplyKeyboardRemove, Update, WebAppInfo
 from telegram.ext import (
     Application, ApplicationHandlerStop, CallbackQueryHandler, CommandHandler, ContextTypes,
     ConversationHandler, MessageHandler, TypeHandler, filters,
@@ -46,6 +48,7 @@ import navaratri
 import retention
 import channel_content
 import oracle
+import special_days
 import matrix
 
 DATABASE_URL = os.environ.get("DATABASE_URL")
@@ -107,7 +110,16 @@ def db_init():
             )
         """)
         cur.execute("CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT)")
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS game_pairs (
+                code TEXT PRIMARY KEY,
+                a_id BIGINT NOT NULL, a_name TEXT, a_sign TEXT, a_stars INT NOT NULL DEFAULT 0,
+                b_id BIGINT, b_name TEXT, b_sign TEXT, b_stars INT NOT NULL DEFAULT 0,
+                created TIMESTAMPTZ DEFAULT now(), updated TIMESTAMPTZ DEFAULT now()
+            )
+        """)
         cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS weekly_off BOOLEAN NOT NULL DEFAULT FALSE")
+        cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS alerts_off BOOLEAN NOT NULL DEFAULT FALSE")
         cur.execute("ALTER TABLE payments ADD COLUMN IF NOT EXISTS reminded BOOLEAN NOT NULL DEFAULT FALSE")
         cur.execute("CREATE TABLE IF NOT EXISTS oracle_events (id SERIAL PRIMARY KEY, chat_id BIGINT, kind TEXT, created TIMESTAMPTZ DEFAULT now())")
         conn.commit()
@@ -136,6 +148,8 @@ def db_remember_user(chat_id, source=None):
 
 # ---------- Приглашения друзей ----------
 REFERRAL_PREFIX = "ref_"
+# Игра «Мой небосвод» (Telegram Mini App), лежит на лендинге
+GAME_URL = os.environ.get("GAME_URL", "https://nebosvod-landing.onrender.com/igra.html")
 REFERRAL_GIFT_FEATURE = "tomorrow"
 
 
@@ -611,6 +625,7 @@ SIGN_CHECK_CB = "sign_check_start"
 CATEGORY_CHART_CB = "cat_chart"
 CATEGORY_MONEY_CB = "cat_money"
 CATEGORY_LOVE_CB = "cat_love"
+CATEGORY_NOW_CB = "cat_now"
 BACK_TO_MENU_CB = "back_menu"
 VENUS_RETRO_CB = "venus_retro"
 NAVARATRI_CB = "navaratri"
@@ -619,6 +634,8 @@ ORACLE_CB = "oracle"
 MATRIX_CB = "matrix"
 ORACLE_GET_CB = "oracle_get"
 WEEKLY_OFF_CB = "weekly_off"
+ALERTS_OFF_CB = "alerts_off"
+ALERTS_ON_CB = "alerts_on"
 WEEKLY_ON_CB = "weekly_on"
 
 
@@ -658,6 +675,41 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         except Exception as e:
             log.warning("promo grant failed: %s", e)
 
+    if source == "pair_compat":
+        if context.user_data.get("chart"):
+            await send_bot(
+                context, chat_id,
+                "Последняя тайна вашей пары — где вы можете ранить друг друга — живёт в полной совместимости. "
+                "Я посчитаю её по датам рождения обоих, по всем планетам, а не только по знакам.",
+                0.5,
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(f"💞 Совместимость с партнёром, {FEATURE_PRICE['compat']} ₽", callback_data=COMPAT_CB)]]),
+            )
+            return ConversationHandler.END
+    elif source and source.startswith("pair_"):
+        code = re.sub(r"[^0-9a-f]", "", source[5:])[:8]
+        if code:
+            await send_bot(
+                context, chat_id,
+                "Вас позвали в общее небо 💞 Это игра вдвоём: каждый ловит звёзды, когда удобно, "
+                "а из ваших звёзд складывается созвездие пары и открывает её тайны.",
+                0.5,
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🌌 Войти в наше небо", web_app=WebAppInfo(url=_pair_url(code)))]]),
+            )
+            if context.user_data.get("chart"):
+                return ConversationHandler.END
+
+    if context.user_data.get("chart") and source == "game_forecast":
+        await send_bot(
+            context, chat_id,
+            "Небо завтра будет другим. Что оно готовит лично вам, по часам и по вашей карте, — в прогнозе на завтра.",
+            0.5,
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🌅 Открыть прогноз на завтра", callback_data=TOMORROW_CB)],
+                [InlineKeyboardButton("🌌 Ещё немного неба", web_app=WebAppInfo(url=GAME_URL))],
+            ]),
+        )
+        return ConversationHandler.END
+
     if context.user_data.get("chart"):
         await send_bot(context, chat_id, "С возвращением! Ваш разбор уже готов, не нужно проходить его заново.", 0.5)
         if promo_venus:
@@ -674,6 +726,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
             await context.bot.send_photo(chat_id=chat_id, photo=f)
     await send_bot(context, chat_id,
                     "Здравствуйте! Я «Небосвод», бот для индивидуального разбора натальной карты.", 0.6)
+    if source and source.startswith("game"):
+        await send_bot(
+            context, chat_id,
+            "Звёзды уже ждут вас: игра открывается кнопкой ниже, и всегда — кнопкой «🌌 Небо» рядом с полем для сообщения. "
+            "А чтобы небо заговорило лично о вас, давайте составим вашу карту.",
+            0.6,
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🌌 Побыть наедине со звёздами", web_app=WebAppInfo(url=GAME_URL))]]),
+        )
     await send_bot(
         context, chat_id,
         "Для начала один короткий вопрос, он важен для того, как будет звучать весь ваш разбор дальше.",
@@ -1078,7 +1138,7 @@ def invite_keyboard(chat_id):
     link = referral_link(chat_id)
     share_url = "https://t.me/share/url?" + urllib.parse.urlencode({
         "url": link,
-        "text": "В индийской астрологии у каждого есть накшатра — лунная стоянка, которая говорит о человеке точнее знака зодиака. Узнай свою: первый разбор в Небосводе бесплатный 🌙",
+        "text": "В индийской астрологии у каждого есть накшатра — лунная стоянка, которая говорит о человеке точнее знака зодиака. Узнай свою в Небосводе 🌙",
     })
     return InlineKeyboardMarkup([[InlineKeyboardButton("💌 Поделиться с близким", url=share_url)]])
 
@@ -1111,7 +1171,7 @@ async def send_vedic_story(context, chat_id, sun_west, sun_vedic, moon_vedic, na
     await send_bot(
         context, chat_id,
         "Если захочется поделиться этим знанием с близким человеком, вот ваша личная ссылка. "
-        "Когда он пройдёт бесплатный разбор, я подарю вам «Что ждёт меня завтра» на сутки 🎁",
+        "Когда он пройдёт разбор, я подарю вам «Что ждёт меня завтра» на сутки 🎁",
         1.0, reply_markup=invite_keyboard(chat_id),
     )
 
@@ -1124,7 +1184,7 @@ async def reward_referrer_if_any(context, chat_id):
         await context.bot.send_message(
             chat_id=referrer,
             text="🎁 Человек, которого вы пригласили, только что прошёл разбор в Небосводе. Спасибо! "
-                 "Дарю вам «Что ждёт меня завтра» на сутки, бесплатно.",
+                 "Дарю вам «Что ждёт меня завтра» на сутки.",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🌅 Открыть прогноз на завтра", callback_data=TOMORROW_CB)]]),
         )
     except Exception:
@@ -1141,7 +1201,7 @@ async def invite_friend(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await context.bot.send_message(
         chat_id=chat_id,
         text="Если хочется поделиться Небосводом с близким человеком, отправьте ему свою личную ссылку. "
-             "Когда он пройдёт бесплатный разбор, я подарю вам «Что ждёт меня завтра» на сутки 🎁 "
+             "Когда он пройдёт разбор, я подарю вам «Что ждёт меня завтра» на сутки 🎁 "
              "За каждого нового человека — новые сутки.\n\n"
              f"Ваша личная ссылка:\n{referral_link(chat_id)}{extra}",
         reply_markup=invite_keyboard(chat_id),
@@ -1523,25 +1583,22 @@ async def tomorrow_choghadiya(update: Update, context: ContextTypes.DEFAULT_TYPE
 SPHERE_EMOJI = {"money": "💰", "love": "❤️", "career": "💼", "health": "🌿"}
 
 
+VENUS_RETRO_UNTIL = date(2026, 11, 14)  # после разворота Венеры вперёд кнопка прячется
+
+
+def _venus_retro_active():
+    return datetime.now(timezone.utc).date() <= VENUS_RETRO_UNTIL
+
+
 def main_menu_keyboard():
-    rows = []
-    if navaratri.feature_active(datetime.now(timezone.utc).date()):
-        rows.append([InlineKeyboardButton("🪔 Ваша Богиня Наваратри — бесплатно", callback_data=NAVARATRI_CB)])
-    return InlineKeyboardMarkup(rows + [
-        [InlineKeyboardButton(f"💗 Ваша ретроградная Венера, {FEATURE_PRICE['venus_retro']} ₽", callback_data=VENUS_RETRO_CB)],
-        [InlineKeyboardButton("🔮 Гармония и разбор карты  ›", callback_data=CATEGORY_CHART_CB)],
-        [InlineKeyboardButton("💰 Деньги  ›", callback_data=CATEGORY_MONEY_CB)],
-        [InlineKeyboardButton("❤️ Отношения  ›", callback_data=CATEGORY_LOVE_CB)],
-        [InlineKeyboardButton(f"{SPHERE_EMOJI['career']} {ct.SPHERES['career']['title']}", callback_data=f"{SPHERE_CB_PREFIX}career")],
-        [InlineKeyboardButton(f"{SPHERE_EMOJI['health']} {ct.SPHERES['health']['title']}", callback_data=f"{SPHERE_CB_PREFIX}health")],
-        [InlineKeyboardButton("🔭 Узнать важные даты", callback_data=FORECAST_CB)],
-        [InlineKeyboardButton("✨ Жизнь, которую вы не прожили", callback_data=UNLIVED_CB)],
-        [InlineKeyboardButton("🔮 Получить ответ на вопрос — бесплатно", callback_data=ORACLE_CB)],
-        [InlineKeyboardButton(f"🌀 Матрица судьбы, {FEATURE_PRICE['matrix']} ₽", callback_data=MATRIX_CB)],
-        [InlineKeyboardButton("🌅 Что ждёт меня завтра, 100 ₽/сутки", callback_data=TOMORROW_CB)],
-        [InlineKeyboardButton("💌 Поделиться с близким", callback_data=INVITE_CB)],
-        [InlineKeyboardButton("📸 Небосвод в Instagram: все 27 накшатр", url="https://www.instagram.com/astroksenija/")],
-        [InlineKeyboardButton("🔄 Начать заново", callback_data=RESTART_CB)],
+    """Главное меню: шесть кнопок по вопросам, с которыми приходит человек."""
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🌌 ИГРА. Побудь наедине со звёздами", web_app=WebAppInfo(url=GAME_URL))],
+        [InlineKeyboardButton("🌙 Сейчас на небе  ›", callback_data=CATEGORY_NOW_CB)],
+        [InlineKeyboardButton("❤️ Любовь  ›", callback_data=CATEGORY_LOVE_CB)],
+        [InlineKeyboardButton("💰 Деньги и работа  ›", callback_data=CATEGORY_MONEY_CB)],
+        [InlineKeyboardButton("🔮 Я и моя карта  ›", callback_data=CATEGORY_CHART_CB)],
+        [InlineKeyboardButton("✨ Ответ на вопрос", callback_data=ORACLE_CB)],
     ])
 
 
@@ -1551,16 +1608,37 @@ def category_keyboard(buttons):
     return InlineKeyboardMarkup(rows)
 
 
+async def category_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    today = datetime.now(timezone.utc).date()
+    buttons = [("🌅 Что ждёт меня завтра, 100 ₽/сутки", TOMORROW_CB)]
+    if _venus_retro_active():
+        buttons.append((f"💗 Ваша ретроградная Венера, {FEATURE_PRICE['venus_retro']} ₽", VENUS_RETRO_CB))
+    if navaratri.feature_active(today):
+        buttons.append(("🪔 Ваша Богиня Наваратри", NAVARATRI_CB))
+    buttons.append(("🔭 Важные даты на два года", FORECAST_CB))
+    await context.bot.send_message(
+        chat_id=query.message.chat_id,
+        text="Что сейчас происходит на небе и как это ложится на вашу карту.",
+        reply_markup=category_keyboard(buttons),
+    )
+
+
 async def category_chart(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     kb = category_keyboard([
-        ("🌡️ Гармония моей карты — бесплатно", HARMONY_CB),
+        ("🌡️ Гармония моей карты", HARMONY_CB),
         (f"🪐 Расширенный разбор карты, {FEATURE_PRICE['extended_natal']} ₽", EXTENDED_NATAL_CB),
+        (f"🌀 Матрица судьбы, {FEATURE_PRICE['matrix']} ₽", MATRIX_CB),
+        ("✨ Жизнь, которую вы не прожили", UNLIVED_CB),
+        (f"{SPHERE_EMOJI['health']} {ct.SPHERES['health']['title']}", f"{SPHERE_CB_PREFIX}health"),
+        ("🔄 Пройти разбор заново", RESTART_CB),
     ])
     await context.bot.send_message(
         chat_id=query.message.chat_id,
-        text="Два взгляда на вашу карту: короткий бесплатный балл гармонии или полный разбор всех планет и точек.",
+        text="Всё о вас самих: ваша карта, её гармония, матрица судьбы и жизнь, которая могла бы быть.",
         reply_markup=kb,
     )
 
@@ -1569,12 +1647,13 @@ async def category_money(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     kb = category_keyboard([
-        ("💰 Разбор денежной сферы — бесплатно", f"{SPHERE_CB_PREFIX}money"),
-        ("🪙 Денежный ритуал по карте, 99 ₽", MONEY_RITUAL_CB),
+        ("💰 Разбор денежной сферы", f"{SPHERE_CB_PREFIX}money"),
+        (f"🪙 Денежный ритуал по карте, {FEATURE_PRICE.get('money_ritual', 99)} ₽", MONEY_RITUAL_CB),
+        (f"{SPHERE_EMOJI['career']} {ct.SPHERES['career']['title']}", f"{SPHERE_CB_PREFIX}career"),
     ])
     await context.bot.send_message(
         chat_id=query.message.chat_id,
-        text="Что посмотреть про деньги: бесплатный разбор денежной сферы или личный ритуал под вашу денежную планету.",
+        text="Деньги и работа: как устроена ваша денежная сфера, личный ритуал под вашу денежную планету и где ваше дело.",
         reply_markup=kb,
     )
 
@@ -1582,16 +1661,17 @@ async def category_money(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def category_love(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    kb = category_keyboard([
-        ("❤️ Разбор сферы отношений — бесплатно", f"{SPHERE_CB_PREFIX}love"),
-        ("💫 Быстрая проверка по знаку — бесплатно", SIGN_CHECK_CB),
-        ("💞 Совместимость с партнёром, 199 ₽", COMPAT_CB),
-        (f"💗 Ваша ретроградная Венера, {FEATURE_PRICE['venus_retro']} ₽", VENUS_RETRO_CB),
-    ])
+    buttons = [
+        ("❤️ Разбор сферы отношений", f"{SPHERE_CB_PREFIX}love"),
+        ("💫 Быстрая проверка по знаку", SIGN_CHECK_CB),
+        (f"💞 Совместимость с партнёром, {FEATURE_PRICE.get('compat', 199)} ₽", COMPAT_CB),
+    ]
+    if _venus_retro_active():
+        buttons.append((f"💗 Ваша ретроградная Венера, {FEATURE_PRICE['venus_retro']} ₽", VENUS_RETRO_CB))
     await context.bot.send_message(
         chat_id=query.message.chat_id,
-        text="Что посмотреть про отношения: бесплатный разбор вашей сферы любви или совместимость с конкретным человеком.",
-        reply_markup=kb,
+        text="Что посмотреть про отношения: вашу сферу любви или совместимость с конкретным человеком.",
+        reply_markup=category_keyboard(buttons),
     )
 
 
@@ -2119,7 +2199,7 @@ async def navaratri_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = query.message.chat_id
     chart = context.user_data.get("chart")
     if not chart:
-        await context.bot.send_message(chat_id=chat_id, text="Чтобы узнать свою Богиню, сначала пройдите бесплатный разбор: /start")
+        await context.bot.send_message(chat_id=chat_id, text="Чтобы узнать свою Богиню, сначала пройдите разбор: /start")
         return
     moon_sid = ac.sidereal_lon(ac.point_lon(chart["moon"]), chart["birth_jd"])
     nak = ac.nakshatra_of(moon_sid)
@@ -2146,7 +2226,7 @@ async def venus_retro_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
 async def _venus_retro_core(chat_id: int, context: ContextTypes.DEFAULT_TYPE):
     chart = context.user_data.get("chart")
     if not chart:
-        await context.bot.send_message(chat_id=chat_id, text="Сначала пройдите бесплатный разбор: /start")
+        await context.bot.send_message(chat_id=chat_id, text="Сначала пройдите разбор: /start")
         return
     if not await payment_gate(chat_id, context, "venus_retro"):
         return
@@ -2411,11 +2491,224 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     return ConversationHandler.END
 
 
+# Ссылки на приложение и его цикл событий: нужны HTTP-потоку, чтобы отправлять сообщения
+_APP = None
+_LOOP = None
+GAME_ORIGIN = "https://nebosvod-landing.onrender.com"
+
+
+def _check_webapp_init_data(init_data):
+    """Проверка подписи Telegram Mini App. Возвращает id пользователя или None."""
+    token = os.environ.get("BOT_TOKEN", "")
+    try:
+        pairs = dict(urllib.parse.parse_qsl(init_data, keep_blank_values=True))
+        their_hash = pairs.pop("hash", "")
+        check = "\n".join(f"{k}={v}" for k, v in sorted(pairs.items()))
+        secret = hmac.new(b"WebAppData", token.encode(), hashlib.sha256).digest()
+        ours = hmac.new(secret, check.encode(), hashlib.sha256).hexdigest()
+        if not their_hash or not hmac.compare_digest(ours, their_hash):
+            return None
+        if int(pairs.get("auth_date", "0")) < datetime.now(timezone.utc).timestamp() - 86400:
+            return None
+        return int(json.loads(pairs.get("user", "{}")).get("id"))
+    except Exception:
+        return None
+
+
+async def _send_game_story(chat_id, jpeg_bytes):
+    share_url = "https://t.me/share/url?" + urllib.parse.urlencode({
+        "url": "https://t.me/nebosvod_astro_bot?start=game_story",
+        "text": "Я собираю своё созвездие в Небосводе. Попробуй, это минута тишины среди звёзд 🌌",
+    })
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("↗️ Отправить подруге", url=share_url)],
+        [InlineKeyboardButton("🌌 Вернуться к звёздам", web_app=WebAppInfo(url=GAME_URL))],
+    ])
+    await _APP.bot.send_photo(
+        chat_id=chat_id, photo=jpeg_bytes,
+        caption="Ваше созвездие ✨\n\nСохраните картинку и выложите в сторис. "
+                "Или отправьте подруге: пусть соберёт своё.",
+        reply_markup=kb,
+    )
+
+
+# ---------- «Две орбиты»: игра вдвоём ----------
+PAIR_SIGNS = {"Овен", "Телец", "Близнецы", "Рак", "Лев", "Дева", "Весы", "Скорпион", "Стрелец", "Козерог", "Водолей", "Рыбы"}
+PAIR_COLS = "code, a_id, a_name, a_sign, a_stars, b_id, b_name, b_sign, b_stars"
+
+
+def _pair_row(cur, code):
+    cur.execute(f"SELECT {PAIR_COLS} FROM game_pairs WHERE code=%s", (code,))
+    r = cur.fetchone()
+    if not r:
+        return None
+    keys = ["code", "a_id", "a_name", "a_sign", "a_stars", "b_id", "b_name", "b_sign", "b_stars"]
+    return dict(zip(keys, r))
+
+
+def _pair_public(p, me):
+    side = "a" if p["a_id"] == me else ("b" if p["b_id"] == me else None)
+    return {
+        "code": p["code"], "me": side,
+        "a": {"name": p["a_name"], "sign": p["a_sign"], "stars": p["a_stars"]},
+        "b": {"name": p["b_name"], "sign": p["b_sign"], "stars": p["b_stars"]} if p["b_id"] else None,
+    }
+
+
+def pair_create(uid, name, sign):
+    code = uuid.uuid4().hex[:8]
+    with db_connect() as conn, conn.cursor() as cur:
+        cur.execute("INSERT INTO game_pairs (code, a_id, a_name, a_sign) VALUES (%s,%s,%s,%s)", (code, uid, name, sign))
+        conn.commit()
+        return _pair_public(_pair_row(cur, code), uid)
+
+
+def pair_join_or_get(uid, name, sign, code):
+    with db_connect() as conn, conn.cursor() as cur:
+        p = _pair_row(cur, code)
+        if not p:
+            return None, None
+        joined = None
+        if p["a_id"] != uid and not p["b_id"] and sign in PAIR_SIGNS:
+            cur.execute("UPDATE game_pairs SET b_id=%s, b_name=%s, b_sign=%s, updated=now() WHERE code=%s AND b_id IS NULL",
+                        (uid, name, sign, code))
+            conn.commit()
+            p = _pair_row(cur, code)
+            joined = p["a_id"] if p["b_id"] == uid else None
+        return _pair_public(p, uid), joined
+
+
+def pair_add_stars(uid, code, stars):
+    stars = max(0, min(int(stars), 300))
+    with db_connect() as conn, conn.cursor() as cur:
+        p = _pair_row(cur, code)
+        if not p:
+            return None, None
+        if p["a_id"] == uid:
+            cur.execute("UPDATE game_pairs SET a_stars=a_stars+%s, updated=now() WHERE code=%s", (stars, code))
+            other = p["b_id"]
+        elif p["b_id"] == uid:
+            cur.execute("UPDATE game_pairs SET b_stars=b_stars+%s, updated=now() WHERE code=%s", (stars, code))
+            other = p["a_id"]
+        else:
+            return None, None
+        conn.commit()
+        return _pair_public(_pair_row(cur, code), uid), other
+
+
+def _pair_url(code):
+    return f"{GAME_URL}?pair={code}"
+
+
+async def _pair_notify(chat_id, text, code):
+    kb = InlineKeyboardMarkup([[InlineKeyboardButton("🌌 В наше небо", web_app=WebAppInfo(url=_pair_url(code)))]])
+    await _APP.bot.send_message(chat_id=chat_id, text=text, reply_markup=kb)
+
+
+def _webapp_user(init_data):
+    """id и имя пользователя из подписанных данных Mini App."""
+    uid = _check_webapp_init_data(init_data)
+    if not uid:
+        return None, None
+    try:
+        user = json.loads(dict(urllib.parse.parse_qsl(init_data)).get("user", "{}"))
+        name = (user.get("first_name") or "").strip()[:40] or "Ваша пара"
+    except Exception:
+        name = "Ваша пара"
+    return uid, name
+
+
+def handle_pair_request(path, data):
+    """Возвращает (статус, ответ). Вызывается из HTTP-потока."""
+    uid, name = _webapp_user(data.get("initData", ""))
+    if not uid:
+        return 403, {"ok": False}
+    if not DATABASE_URL:
+        return 503, {"ok": False}
+    sign = data.get("sign", "")
+    code = re.sub(r"[^0-9a-f]", "", str(data.get("code", "")))[:8]
+    if path == "/pair/create":
+        if sign not in PAIR_SIGNS:
+            return 400, {"ok": False}
+        return 200, {"ok": True, "pair": pair_create(uid, name, sign)}
+    if path == "/pair/state":
+        pair, joined_owner = pair_join_or_get(uid, name, sign, code)
+        if not pair:
+            return 404, {"ok": False}
+        if joined_owner and _APP and _LOOP:
+            asyncio.run_coroutine_threadsafe(_pair_notify(
+                joined_owner, f"{name} принял(а) приглашение 💞 Теперь у вас общее небо. Ловите звёзды вместе: "
+                              f"чем больше соберёте, тем больше небо расскажет о вашей паре.", code), _LOOP)
+        return 200, {"ok": True, "pair": pair}
+    if path == "/pair/score":
+        stars = data.get("stars", 0)
+        pair, other = pair_add_stars(uid, code, stars)
+        if not pair:
+            return 404, {"ok": False}
+        if other and int(stars) > 0 and _APP and _LOOP:
+            total = pair["a"]["stars"] + (pair["b"]["stars"] if pair["b"] else 0)
+            asyncio.run_coroutine_threadsafe(_pair_notify(
+                other, f"{name} поймал(а) {int(stars)} звёзд в ваше общее небо. Всего у вас уже {total} 🌌\nТвой ход.", code), _LOOP)
+        return 200, {"ok": True, "pair": pair}
+    return 404, {"ok": False}
+
+
 class _HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
         self.wfile.write(b"Nebosvod bot is running")
+
+    def _cors(self):
+        self.send_header("Access-Control-Allow-Origin", GAME_ORIGIN)
+        self.send_header("Access-Control-Allow-Methods", "POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+
+    def do_OPTIONS(self):
+        self.send_response(204)
+        self._cors()
+        self.end_headers()
+
+    def do_POST(self):
+        """Картинка для сторис из игры: проверяем подпись Telegram и шлём картинку в чат."""
+        status = 400
+        try:
+            if self.path.rstrip("/").startswith("/pair/"):
+                length = int(self.headers.get("Content-Length", "0"))
+                data = json.loads(self.rfile.read(min(length, 100_000)).decode("utf-8")) if length else {}
+                status, body = handle_pair_request(self.path.rstrip("/"), data)
+                self.send_response(status)
+                self._cors()
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps(body, ensure_ascii=False).encode("utf-8"))
+                return
+            if self.path.rstrip("/") == "/game/story":
+                length = int(self.headers.get("Content-Length", "0"))
+                if 0 < length <= 4_000_000:
+                    data = json.loads(self.rfile.read(length).decode("utf-8"))
+                    chat_id = _check_webapp_init_data(data.get("initData", ""))
+                    image = data.get("image", "")
+                    if not chat_id:
+                        status = 403
+                    elif image.startswith("data:image/jpeg;base64,") and _APP and _LOOP:
+                        jpeg = base64.b64decode(image.split(",", 1)[1])
+                        fut = asyncio.run_coroutine_threadsafe(_send_game_story(chat_id, jpeg), _LOOP)
+                        fut.result(timeout=30)
+                        status = 200
+                        log.info("картинка игры для сторис отправлена %s", chat_id)
+                else:
+                    status = 413
+            else:
+                status = 404
+        except Exception:
+            logging.exception("ошибка при отправке картинки игры")
+            status = 500
+        self.send_response(status)
+        self._cors()
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(b'{"ok":true}' if status == 200 else b'{"ok":false}')
 
     def log_message(self, format, *args):
         pass  # не засоряем логи проверками на живость
@@ -2437,7 +2730,7 @@ def start_health_server():
     снаружи же Render показывал бы 502, будто всё мертво."""
     port = int(os.environ.get("PORT", "8080"))
     try:
-        server = HTTPServer(("0.0.0.0", port), _HealthHandler)
+        server = ThreadingHTTPServer(("0.0.0.0", port), _HealthHandler)
     except OSError:
         logging.exception("health-сервер не смог занять порт %s, вероятно порт уже занят", port)
         return
@@ -2484,7 +2777,7 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
             cur.execute("SELECT COUNT(*) FROM users WHERE first_seen > now() - interval '1 day'")
             day = cur.fetchone()[0]
             cur.execute(
-                "SELECT CASE WHEN source LIKE 'ref\\_%%' THEN 'приглашения друзей' ELSE COALESCE(source, 'без метки') END AS src, COUNT(*) FROM users "
+                "SELECT CASE WHEN source LIKE 'ref\\_%%' THEN 'приглашения друзей' WHEN source LIKE 'pair\\_%%' THEN 'игра вдвоём' ELSE COALESCE(source, 'без метки') END AS src, COUNT(*) FROM users "
                 "WHERE first_seen > now() - interval '14 days' "
                 "GROUP BY src ORDER BY COUNT(*) DESC LIMIT 15"
             )
@@ -2691,6 +2984,16 @@ async def retention_tick(bot):
             n = await send_weekly_all(bot, week_start)
             db_kv_set(key, f"sent {n}")
             logging.info("недельный прогноз отправлен: %s", n)
+    # важные дни и объявления: в свой час по Москве (по умолчанию 19:00), не позже 22:00
+    for ev in special_days.due(now_msk.date().isoformat()):
+        if ev.get("hour", 19) <= now_msk.hour < 22:
+            key = f"special_{ev['id']}"
+            if db_kv_get(key):
+                continue
+            db_kv_set(key, "sending")
+            n = await send_special_all(bot, ev)
+            db_kv_set(key, f"sent {n}")
+            logging.info("важный день %s отправлен: %s", ev["id"], n)
     # напоминания об оплате только днём
     if 10 <= now_msk.hour < 21:
         done = set()
@@ -2708,6 +3011,81 @@ async def retention_tick(bot):
                 await bot.send_message(chat_id=chat_id, text=retention.reminder_text(label, feature), reply_markup=kb)
             except Exception as e:
                 logging.info("напоминание не доставлено %s: %s", chat_id, e)
+
+
+def db_alert_targets():
+    with db_connect() as conn, conn.cursor() as cur:
+        cur.execute("SELECT chat_id FROM users WHERE NOT alerts_off")
+        return [row[0] for row in cur.fetchall()]
+
+
+def db_set_alerts_off(chat_id, off):
+    with db_connect() as conn, conn.cursor() as cur:
+        cur.execute("UPDATE users SET alerts_off=%s WHERE chat_id=%s", (off, chat_id))
+        conn.commit()
+
+
+def special_keyboard(kinds):
+    labels = {
+        "tomorrow": ("🌅 Что ждёт меня завтра", TOMORROW_CB),
+        "navaratri": ("🪔 Моя Богиня Наваратри", NAVARATRI_CB),
+        "forecast": ("🔭 Мои важные даты", FORECAST_CB),
+        "oracle": ("✨ Задать вопрос", ORACLE_CB),
+        "venus": ("💗 Моя ретроградная Венера", VENUS_RETRO_CB),
+    }
+    rows = []
+    for k in kinds:
+        if k == "game":
+            rows.append([InlineKeyboardButton("🌌 Немного неба: игра", web_app=WebAppInfo(url=GAME_URL))])
+        elif k in labels:
+            text, cb = labels[k]
+            rows.append([InlineKeyboardButton(text, callback_data=cb)])
+    rows.append([InlineKeyboardButton("🔕 Не присылать о важных днях", callback_data=ALERTS_OFF_CB)])
+    return InlineKeyboardMarkup(rows)
+
+
+async def send_special_all(bot, ev):
+    sent = 0
+    kb = special_keyboard(ev.get("buttons", []))
+    for chat_id in db_alert_targets():
+        try:
+            await bot.send_message(chat_id=chat_id, text=ev["text"], reply_markup=kb)
+            sent += 1
+        except Exception as e:
+            logging.info("важный день не доставлен %s: %s", chat_id, e)
+        await asyncio.sleep(0.05)
+    return sent
+
+
+async def alerts_off(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    db_set_alerts_off(query.message.chat_id, True)
+    kb = InlineKeyboardMarkup([[InlineKeyboardButton("🔔 Включить обратно", callback_data=ALERTS_ON_CB)]])
+    await context.bot.send_message(chat_id=query.message.chat_id,
+                                   text="Хорошо, о важных днях больше писать не буду. Если захотите вернуть, нажмите кнопку ниже.",
+                                   reply_markup=kb)
+
+
+async def alerts_on(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    db_set_alerts_off(query.message.chat_id, False)
+    await context.bot.send_message(chat_id=query.message.chat_id,
+                                   text="Готово, накануне важных дней снова напишу 🌙")
+
+
+async def special_preview(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/special_preview пароль — прислать себе ближайшие сообщения о важных днях (никому больше не уходят)."""
+    parts = (update.message.text or "").split(maxsplit=1)
+    if len(parts) < 2 or parts[1] != BROADCAST_PASSWORD or not BROADCAST_PASSWORD:
+        await update.message.reply_text("Формат: /special_preview пароль")
+        return
+    from datetime import datetime as _dt
+    today = _dt.now(retention.MSK).date().isoformat()
+    for ev in special_days.upcoming(today):
+        await update.message.reply_text(f"[уйдёт {ev['send_on']} в {ev.get('hour', 19)}:00 мск]\n\n{ev['text']}",
+                                        reply_markup=special_keyboard(ev.get("buttons", [])))
 
 
 async def retention_scheduler(application):
@@ -2754,6 +3132,15 @@ async def weekly_preview(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def _post_init(application):
+    global _APP, _LOOP
+    _APP = application
+    _LOOP = asyncio.get_running_loop()
+    try:
+        await application.bot.set_chat_menu_button(
+            menu_button=MenuButtonWebApp(text="🌌 Небо", web_app=WebAppInfo(url=GAME_URL))
+        )
+    except Exception as e:
+        log.warning("Не удалось поставить кнопку игры в меню: %s", e)
     application.create_task(channel_scheduler(application))
     application.create_task(retention_scheduler(application))
 
@@ -2872,6 +3259,7 @@ def main():
     application.add_handler(CallbackQueryHandler(unlived, pattern=f"^{UNLIVED_CB}$"))
     application.add_handler(CallbackQueryHandler(harmony, pattern=f"^{HARMONY_CB}$"))
     application.add_handler(CallbackQueryHandler(extended_natal, pattern=f"^{EXTENDED_NATAL_CB}$"))
+    application.add_handler(CallbackQueryHandler(category_now, pattern=f"^{CATEGORY_NOW_CB}$"))
     application.add_handler(CallbackQueryHandler(category_chart, pattern=f"^{CATEGORY_CHART_CB}$"))
     application.add_handler(CallbackQueryHandler(category_money, pattern=f"^{CATEGORY_MONEY_CB}$"))
     application.add_handler(CallbackQueryHandler(category_love, pattern=f"^{CATEGORY_LOVE_CB}$"))
@@ -2895,6 +3283,9 @@ def main():
     application.add_handler(CallbackQueryHandler(venus_retro_handler, pattern=f"^{VENUS_RETRO_CB}$"))
     application.add_handler(CallbackQueryHandler(navaratri_handler, pattern=f"^{NAVARATRI_CB}$"))
     application.add_handler(CallbackQueryHandler(weekly_off, pattern=f"^{WEEKLY_OFF_CB}$"))
+    application.add_handler(CallbackQueryHandler(alerts_off, pattern=f"^{ALERTS_OFF_CB}$"))
+    application.add_handler(CallbackQueryHandler(alerts_on, pattern=f"^{ALERTS_ON_CB}$"))
+    application.add_handler(CommandHandler("special_preview", special_preview))
     application.add_handler(CallbackQueryHandler(weekly_on, pattern=f"^{WEEKLY_ON_CB}$"))
     application.add_handler(CommandHandler("invite", invite_friend))
     application.add_handler(CommandHandler("broadcast", broadcast))
