@@ -2700,9 +2700,9 @@ async def retention_tick(bot):
             n = await send_weekly_all(bot, week_start)
             db_kv_set(key, f"sent {n}")
             logging.info("недельный прогноз отправлен: %s", n)
-    # важные дни: накануне, с 19:00 по Москве
-    if 19 <= now_msk.hour < 22:
-        for ev in special_days.due(now_msk.date().isoformat()):
+    # важные дни и объявления: в свой час по Москве (по умолчанию 19:00), не позже 22:00
+    for ev in special_days.due(now_msk.date().isoformat()):
+        if ev.get("hour", 19) <= now_msk.hour < 22:
             key = f"special_{ev['id']}"
             if db_kv_get(key):
                 continue
@@ -2800,7 +2800,7 @@ async def special_preview(update: Update, context: ContextTypes.DEFAULT_TYPE):
     from datetime import datetime as _dt
     today = _dt.now(retention.MSK).date().isoformat()
     for ev in special_days.upcoming(today):
-        await update.message.reply_text(f"[уйдёт {ev['send_on']} в 19:00 мск]\n\n{ev['text']}",
+        await update.message.reply_text(f"[уйдёт {ev['send_on']} в {ev.get('hour', 19)}:00 мск]\n\n{ev['text']}",
                                         reply_markup=special_keyboard(ev.get("buttons", [])))
 
 
