@@ -13,6 +13,8 @@
 """
 import asyncio
 import base64
+import hashlib
+import hmac
 import json
 import logging
 import os
@@ -669,6 +671,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
             await context.bot.send_photo(chat_id=chat_id, photo=f)
     await send_bot(context, chat_id,
                     "Здравствуйте! Я «Небосвод», бот для индивидуального разбора натальной карты.", 0.6)
+    if source and source.startswith("game"):
+        await send_bot(
+            context, chat_id,
+            "Звёзды уже ждут вас: игра открывается кнопкой ниже, и всегда — кнопкой «🌌 Небо» рядом с полем для сообщения. "
+            "А чтобы небо заговорило лично о вас, давайте составим вашу карту.",
+            0.6,
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🌌 Побыть наедине со звёздами", web_app=WebAppInfo(url=GAME_URL))]]),
+        )
     await send_bot(
         context, chat_id,
         "Для начала один короткий вопрос, он важен для того, как будет звучать весь ваш разбор дальше.",
@@ -2420,11 +2430,93 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     return ConversationHandler.END
 
 
+# Ссылки на приложение и его цикл событий: нужны HTTP-потоку, чтобы отправлять сообщения
+_APP = None
+_LOOP = None
+GAME_ORIGIN = "https://nebosvod-landing.onrender.com"
+
+
+def _check_webapp_init_data(init_data):
+    """Проверка подписи Telegram Mini App. Возвращает id пользователя или None."""
+    token = os.environ.get("BOT_TOKEN", "")
+    try:
+        pairs = dict(urllib.parse.parse_qsl(init_data, keep_blank_values=True))
+        their_hash = pairs.pop("hash", "")
+        check = "\n".join(f"{k}={v}" for k, v in sorted(pairs.items()))
+        secret = hmac.new(b"WebAppData", token.encode(), hashlib.sha256).digest()
+        ours = hmac.new(secret, check.encode(), hashlib.sha256).hexdigest()
+        if not their_hash or not hmac.compare_digest(ours, their_hash):
+            return None
+        if int(pairs.get("auth_date", "0")) < datetime.now(timezone.utc).timestamp() - 86400:
+            return None
+        return int(json.loads(pairs.get("user", "{}")).get("id"))
+    except Exception:
+        return None
+
+
+async def _send_game_story(chat_id, jpeg_bytes):
+    share_url = "https://t.me/share/url?" + urllib.parse.urlencode({
+        "url": "https://t.me/nebosvod_astro_bot?start=game_story",
+        "text": "Я собираю своё созвездие в Небосводе. Попробуй, это минута тишины среди звёзд 🌌",
+    })
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("↗️ Отправить подруге", url=share_url)],
+        [InlineKeyboardButton("🌌 Вернуться к звёздам", web_app=WebAppInfo(url=GAME_URL))],
+    ])
+    await _APP.bot.send_photo(
+        chat_id=chat_id, photo=jpeg_bytes,
+        caption="Ваше созвездие ✨\n\nСохраните картинку и выложите в сторис. "
+                "Или отправьте подруге: пусть соберёт своё.",
+        reply_markup=kb,
+    )
+
+
 class _HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
         self.wfile.write(b"Nebosvod bot is running")
+
+    def _cors(self):
+        self.send_header("Access-Control-Allow-Origin", GAME_ORIGIN)
+        self.send_header("Access-Control-Allow-Methods", "POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+
+    def do_OPTIONS(self):
+        self.send_response(204)
+        self._cors()
+        self.end_headers()
+
+    def do_POST(self):
+        """Картинка для сторис из игры: проверяем подпись Telegram и шлём картинку в чат."""
+        status = 400
+        try:
+            if self.path.rstrip("/") == "/game/story":
+                length = int(self.headers.get("Content-Length", "0"))
+                if 0 < length <= 4_000_000:
+                    data = json.loads(self.rfile.read(length).decode("utf-8"))
+                    chat_id = _check_webapp_init_data(data.get("initData", ""))
+                    image = data.get("image", "")
+                    if not chat_id:
+                        status = 403
+                    elif image.startswith("data:image/jpeg;base64,") and _APP and _LOOP:
+                        jpeg = base64.b64decode(image.split(",", 1)[1])
+                        fut = asyncio.run_coroutine_threadsafe(_send_game_story(chat_id, jpeg), _LOOP)
+                        fut.result(timeout=30)
+                        status = 200
+                        log.info("картинка игры для сторис отправлена %s", chat_id)
+                else:
+                    status = 413
+            else:
+                status = 404
+        except Exception:
+            logging.exception("ошибка при отправке картинки игры")
+            status = 500
+        self.send_response(status)
+        self._cors()
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(b'{"ok":true}' if status == 200 else b'{"ok":false}')
 
     def log_message(self, format, *args):
         pass  # не засоряем логи проверками на живость
@@ -2848,6 +2940,9 @@ async def weekly_preview(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def _post_init(application):
+    global _APP, _LOOP
+    _APP = application
+    _LOOP = asyncio.get_running_loop()
     try:
         await application.bot.set_chat_menu_button(
             menu_button=MenuButtonWebApp(text="🌌 Небо", web_app=WebAppInfo(url=GAME_URL))
