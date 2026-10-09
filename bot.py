@@ -26,7 +26,7 @@ import urllib.parse
 import urllib.request
 import uuid
 from datetime import date, datetime, timedelta, timezone
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
 
 import psycopg2
 
@@ -110,6 +110,14 @@ def db_init():
             )
         """)
         cur.execute("CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT)")
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS game_pairs (
+                code TEXT PRIMARY KEY,
+                a_id BIGINT NOT NULL, a_name TEXT, a_sign TEXT, a_stars INT NOT NULL DEFAULT 0,
+                b_id BIGINT, b_name TEXT, b_sign TEXT, b_stars INT NOT NULL DEFAULT 0,
+                created TIMESTAMPTZ DEFAULT now(), updated TIMESTAMPTZ DEFAULT now()
+            )
+        """)
         cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS weekly_off BOOLEAN NOT NULL DEFAULT FALSE")
         cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS alerts_off BOOLEAN NOT NULL DEFAULT FALSE")
         cur.execute("ALTER TABLE payments ADD COLUMN IF NOT EXISTS reminded BOOLEAN NOT NULL DEFAULT FALSE")
@@ -646,6 +654,29 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     is_new = db_remember_user(chat_id, source)
     if is_new and source and source.startswith(REFERRAL_PREFIX) and source[len(REFERRAL_PREFIX):].isdigit():
         db_add_referral(chat_id, int(source[len(REFERRAL_PREFIX):]))
+
+    if source == "pair_compat":
+        if context.user_data.get("chart"):
+            await send_bot(
+                context, chat_id,
+                "Последняя тайна вашей пары — где вы можете ранить друг друга — живёт в полной совместимости. "
+                "Я посчитаю её по датам рождения обоих, по всем планетам, а не только по знакам.",
+                0.5,
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(f"💞 Совместимость с партнёром, {FEATURE_PRICE['compat']} ₽", callback_data=COMPAT_CB)]]),
+            )
+            return ConversationHandler.END
+    elif source and source.startswith("pair_"):
+        code = re.sub(r"[^0-9a-f]", "", source[5:])[:8]
+        if code:
+            await send_bot(
+                context, chat_id,
+                "Вас позвали в общее небо 💞 Это игра вдвоём: каждый ловит звёзды, когда удобно, "
+                "а из ваших звёзд складывается созвездие пары и открывает её тайны.",
+                0.5,
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🌌 Войти в наше небо", web_app=WebAppInfo(url=_pair_url(code)))]]),
+            )
+            if context.user_data.get("chart"):
+                return ConversationHandler.END
 
     if context.user_data.get("chart") and source == "game_forecast":
         await send_bot(
@@ -2471,6 +2502,127 @@ async def _send_game_story(chat_id, jpeg_bytes):
     )
 
 
+# ---------- «Две орбиты»: игра вдвоём ----------
+PAIR_SIGNS = {"Овен", "Телец", "Близнецы", "Рак", "Лев", "Дева", "Весы", "Скорпион", "Стрелец", "Козерог", "Водолей", "Рыбы"}
+PAIR_COLS = "code, a_id, a_name, a_sign, a_stars, b_id, b_name, b_sign, b_stars"
+
+
+def _pair_row(cur, code):
+    cur.execute(f"SELECT {PAIR_COLS} FROM game_pairs WHERE code=%s", (code,))
+    r = cur.fetchone()
+    if not r:
+        return None
+    keys = ["code", "a_id", "a_name", "a_sign", "a_stars", "b_id", "b_name", "b_sign", "b_stars"]
+    return dict(zip(keys, r))
+
+
+def _pair_public(p, me):
+    side = "a" if p["a_id"] == me else ("b" if p["b_id"] == me else None)
+    return {
+        "code": p["code"], "me": side,
+        "a": {"name": p["a_name"], "sign": p["a_sign"], "stars": p["a_stars"]},
+        "b": {"name": p["b_name"], "sign": p["b_sign"], "stars": p["b_stars"]} if p["b_id"] else None,
+    }
+
+
+def pair_create(uid, name, sign):
+    code = uuid.uuid4().hex[:8]
+    with db_connect() as conn, conn.cursor() as cur:
+        cur.execute("INSERT INTO game_pairs (code, a_id, a_name, a_sign) VALUES (%s,%s,%s,%s)", (code, uid, name, sign))
+        conn.commit()
+        return _pair_public(_pair_row(cur, code), uid)
+
+
+def pair_join_or_get(uid, name, sign, code):
+    with db_connect() as conn, conn.cursor() as cur:
+        p = _pair_row(cur, code)
+        if not p:
+            return None, None
+        joined = None
+        if p["a_id"] != uid and not p["b_id"] and sign in PAIR_SIGNS:
+            cur.execute("UPDATE game_pairs SET b_id=%s, b_name=%s, b_sign=%s, updated=now() WHERE code=%s AND b_id IS NULL",
+                        (uid, name, sign, code))
+            conn.commit()
+            p = _pair_row(cur, code)
+            joined = p["a_id"] if p["b_id"] == uid else None
+        return _pair_public(p, uid), joined
+
+
+def pair_add_stars(uid, code, stars):
+    stars = max(0, min(int(stars), 300))
+    with db_connect() as conn, conn.cursor() as cur:
+        p = _pair_row(cur, code)
+        if not p:
+            return None, None
+        if p["a_id"] == uid:
+            cur.execute("UPDATE game_pairs SET a_stars=a_stars+%s, updated=now() WHERE code=%s", (stars, code))
+            other = p["b_id"]
+        elif p["b_id"] == uid:
+            cur.execute("UPDATE game_pairs SET b_stars=b_stars+%s, updated=now() WHERE code=%s", (stars, code))
+            other = p["a_id"]
+        else:
+            return None, None
+        conn.commit()
+        return _pair_public(_pair_row(cur, code), uid), other
+
+
+def _pair_url(code):
+    return f"{GAME_URL}?pair={code}"
+
+
+async def _pair_notify(chat_id, text, code):
+    kb = InlineKeyboardMarkup([[InlineKeyboardButton("🌌 В наше небо", web_app=WebAppInfo(url=_pair_url(code)))]])
+    await _APP.bot.send_message(chat_id=chat_id, text=text, reply_markup=kb)
+
+
+def _webapp_user(init_data):
+    """id и имя пользователя из подписанных данных Mini App."""
+    uid = _check_webapp_init_data(init_data)
+    if not uid:
+        return None, None
+    try:
+        user = json.loads(dict(urllib.parse.parse_qsl(init_data)).get("user", "{}"))
+        name = (user.get("first_name") or "").strip()[:40] or "Ваша пара"
+    except Exception:
+        name = "Ваша пара"
+    return uid, name
+
+
+def handle_pair_request(path, data):
+    """Возвращает (статус, ответ). Вызывается из HTTP-потока."""
+    uid, name = _webapp_user(data.get("initData", ""))
+    if not uid:
+        return 403, {"ok": False}
+    if not DATABASE_URL:
+        return 503, {"ok": False}
+    sign = data.get("sign", "")
+    code = re.sub(r"[^0-9a-f]", "", str(data.get("code", "")))[:8]
+    if path == "/pair/create":
+        if sign not in PAIR_SIGNS:
+            return 400, {"ok": False}
+        return 200, {"ok": True, "pair": pair_create(uid, name, sign)}
+    if path == "/pair/state":
+        pair, joined_owner = pair_join_or_get(uid, name, sign, code)
+        if not pair:
+            return 404, {"ok": False}
+        if joined_owner and _APP and _LOOP:
+            asyncio.run_coroutine_threadsafe(_pair_notify(
+                joined_owner, f"{name} принял(а) приглашение 💞 Теперь у вас общее небо. Ловите звёзды вместе: "
+                              f"чем больше соберёте, тем больше небо расскажет о вашей паре.", code), _LOOP)
+        return 200, {"ok": True, "pair": pair}
+    if path == "/pair/score":
+        stars = data.get("stars", 0)
+        pair, other = pair_add_stars(uid, code, stars)
+        if not pair:
+            return 404, {"ok": False}
+        if other and int(stars) > 0 and _APP and _LOOP:
+            total = pair["a"]["stars"] + (pair["b"]["stars"] if pair["b"] else 0)
+            asyncio.run_coroutine_threadsafe(_pair_notify(
+                other, f"{name} поймал(а) {int(stars)} звёзд в ваше общее небо. Всего у вас уже {total} 🌌\nТвой ход.", code), _LOOP)
+        return 200, {"ok": True, "pair": pair}
+    return 404, {"ok": False}
+
+
 class _HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
@@ -2491,6 +2643,16 @@ class _HealthHandler(BaseHTTPRequestHandler):
         """Картинка для сторис из игры: проверяем подпись Telegram и шлём картинку в чат."""
         status = 400
         try:
+            if self.path.rstrip("/").startswith("/pair/"):
+                length = int(self.headers.get("Content-Length", "0"))
+                data = json.loads(self.rfile.read(min(length, 100_000)).decode("utf-8")) if length else {}
+                status, body = handle_pair_request(self.path.rstrip("/"), data)
+                self.send_response(status)
+                self._cors()
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps(body, ensure_ascii=False).encode("utf-8"))
+                return
             if self.path.rstrip("/") == "/game/story":
                 length = int(self.headers.get("Content-Length", "0"))
                 if 0 < length <= 4_000_000:
@@ -2538,7 +2700,7 @@ def start_health_server():
     снаружи же Render показывал бы 502, будто всё мертво."""
     port = int(os.environ.get("PORT", "8080"))
     try:
-        server = HTTPServer(("0.0.0.0", port), _HealthHandler)
+        server = ThreadingHTTPServer(("0.0.0.0", port), _HealthHandler)
     except OSError:
         logging.exception("health-сервер не смог занять порт %s, вероятно порт уже занят", port)
         return
@@ -2585,7 +2747,7 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
             cur.execute("SELECT COUNT(*) FROM users WHERE first_seen > now() - interval '1 day'")
             day = cur.fetchone()[0]
             cur.execute(
-                "SELECT CASE WHEN source LIKE 'ref\\_%%' THEN 'приглашения друзей' ELSE COALESCE(source, 'без метки') END AS src, COUNT(*) FROM users "
+                "SELECT CASE WHEN source LIKE 'ref\\_%%' THEN 'приглашения друзей' WHEN source LIKE 'pair\\_%%' THEN 'игра вдвоём' ELSE COALESCE(source, 'без метки') END AS src, COUNT(*) FROM users "
                 "WHERE first_seen > now() - interval '14 days' "
                 "GROUP BY src ORDER BY COUNT(*) DESC LIMIT 15"
             )
